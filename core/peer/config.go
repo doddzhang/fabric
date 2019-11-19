@@ -34,6 +34,14 @@ import (
 	"github.com/spf13/viper"
 )
 
+// ExternalBuilder represents the configuration structure of
+// a chaincode external builder
+type ExternalBuilder struct {
+	EnvironmentWhitelist []string `yaml:"environmentWhitelist"`
+	Name                 string   `yaml:"name"`
+	Path                 string   `yaml:"path"`
+}
+
 // Config is the struct that defines the Peer configurations.
 type Config struct {
 	// LocalMSPID is the identifier of the local MSP.
@@ -139,6 +147,10 @@ type Config struct {
 
 	// ChaincodePull enables/disables force pulling of the base docker image.
 	ChaincodePull bool
+	// ExternalBuilders represents the builders and launchers for
+	// chaincode. The external builder detection processing will iterate over the
+	// builders in the order specified below.
+	ExternalBuilders []ExternalBuilder
 
 	// ----- Operations config -----
 	// TODO: create separate sub-struct for Operations config.
@@ -202,6 +214,9 @@ func (c *Config) load() error {
 	if err != nil {
 		return err
 	}
+
+	configDir := filepath.Dir(viper.ConfigFileUsed())
+
 	c.PeerAddress = preeAddress
 	c.PeerID = viper.GetString("peer.id")
 	c.LocalMSPID = viper.GetString("peer.localMspId")
@@ -250,13 +265,30 @@ func (c *Config) load() error {
 	}
 
 	c.ChaincodePull = viper.GetBool("chaincode.pull")
+	var externalBuilders []ExternalBuilder
+	err = viper.UnmarshalKey("chaincode.externalBuilders", &externalBuilders)
+	if err != nil {
+		return err
+	}
+	for _, builder := range externalBuilders {
+		if builder.Path == "" {
+			return fmt.Errorf("invalid external builder configuration, path attribute missing in one or more builders")
+		}
+		if builder.Name == "" {
+			return fmt.Errorf("external builder at path %s has no name attribute", builder.Path)
+		}
+	}
+	c.ExternalBuilders = externalBuilders
 
 	c.OperationsListenAddress = viper.GetString("operations.listenAddress")
 	c.OperationsTLSEnabled = viper.GetBool("operations.tls.enabled")
-	c.OperationsTLSCertFile = viper.GetString("operations.tls.cert.file")
-	c.OperationsTLSKeyFile = viper.GetString("operations.tls.key.file")
+	c.OperationsTLSCertFile = config.GetPath("operations.tls.cert.file")
+	c.OperationsTLSKeyFile = config.GetPath("operations.tls.key.file")
 	c.OperationsTLSClientAuthRequired = viper.GetBool("operations.tls.clientAuthRequired")
-	c.OperationsTLSClientRootCAs = viper.GetStringSlice("operations.tls.clientRootCAs.files")
+
+	for _, rca := range viper.GetStringSlice("operations.tls.clientRootCAs.files") {
+		c.OperationsTLSClientRootCAs = append(c.OperationsTLSClientRootCAs, config.TranslatePath(configDir, rca))
+	}
 
 	c.MetricsProvider = viper.GetString("metrics.provider")
 	c.StatsdNetwork = viper.GetString("metrics.statsd.network")
@@ -308,6 +340,7 @@ func getLocalAddress() (string, error) {
 // GetServerConfig returns the gRPC server configuration for the peer
 func GetServerConfig() (comm.ServerConfig, error) {
 	serverConfig := comm.ServerConfig{
+		ConnectionTimeout: viper.GetDuration("peer.connectiontimeout"),
 		SecOpts: comm.SecureOptions{
 			UseTLS: viper.GetBool("peer.tls.enabled"),
 		},

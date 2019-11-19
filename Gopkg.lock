@@ -75,6 +75,14 @@
   version = "v1.20.1"
 
 [[projects]]
+  digest = "1:29add35a36be0ef65639a201df2b86e4e3d3b3b2e5eac4e35e02642b23b22405"
+  name = "github.com/VictoriaMetrics/fastcache"
+  packages = ["."]
+  pruneopts = "NUT"
+  revision = "4d94f266cd3cecbcd97eaebee9e3d6d8cf918643"
+  version = "v1.4.6"
+
+[[projects]]
   branch = "master"
   digest = "1:f3793f8a708522400cef1dba23385e901aede5519f68971fd69938ef330b07a1"
   name = "github.com/alecthomas/template"
@@ -100,6 +108,14 @@
   pruneopts = "NUT"
   revision = "4b2b341e8d7715fae06375aa633dbb6e91b3fb46"
   version = "v1.0.0"
+
+[[projects]]
+  digest = "1:0c31fa2fb2c809d61d640e28cc400087fe205df6ec9623dd1eb91a7de8d4f5d6"
+  name = "github.com/cespare/xxhash"
+  packages = ["."]
+  pruneopts = "NUT"
+  revision = "de209a9ffae3256185a6bb135d1a0ada7b2b5f09"
+  version = "v2.1.0"
 
 [[projects]]
   branch = "master"
@@ -323,12 +339,12 @@
   version = "v1.7.2"
 
 [[projects]]
-  digest = "1:1b497700cbc61544430babb4e4fd4313758bb9fec7144ca50c625fa6ce8266c7"
+  digest = "1:432e8b04365b52add2d6256a42de45cebebf6b7a132d4eacb052602fe199a80a"
   name = "github.com/grpc-ecosystem/go-grpc-middleware"
   packages = ["."]
   pruneopts = "NUT"
-  revision = "c250d6563d4d4c20252cd865923440e829844f4e"
-  version = "v1.0.0"
+  revision = "dd15ed025b6054e5253963e355991f3070d4e593"
+  version = "v1.1.0"
 
 [[projects]]
   digest = "1:53a4ebb0e1eb24a4644a3eec9457ba6ead5476a9ea5af43bf2c8b8b1a8ce47f2"
@@ -364,12 +380,46 @@
   revision = "5ccba6eab8d6b39aa2cdd88db202bba0e25da5d7"
 
 [[projects]]
+  branch = "master"
+  digest = "1:3744d14df8305f7573c5aeaa3752b57c8bb187d56a814ecbd775086b429c8727"
+  name = "github.com/hyperledger/fabric-chaincode-go"
+  packages = [
+    "pkg/statebased",
+    "shim",
+    "shim/internal",
+    "shimtest",
+  ]
+  pruneopts = "NUT"
+  revision = "d970cbc54e830c5dc8480ce3e71ffdc663d20fa5"
+
+[[projects]]
   digest = "1:0f4305e5a43e324844412168385a23ff23dafc55369fcbbc2ea77fb974f828cc"
   name = "github.com/hyperledger/fabric-lib-go"
   packages = ["healthz"]
   pruneopts = "NUT"
   revision = "90dc96fb23ab7eb18477e4bfcf9cd8ebdb7209f0"
   version = "v1.0.0"
+
+[[projects]]
+  branch = "master"
+  digest = "1:89ce1b92aff8f014e1728764f116fa9ff61c1137913bb3ed2ceb082cae01f9d4"
+  name = "github.com/hyperledger/fabric-protos-go"
+  packages = [
+    "common",
+    "discovery",
+    "gossip",
+    "ledger/queryresult",
+    "ledger/rwset",
+    "ledger/rwset/kvrwset",
+    "msp",
+    "orderer",
+    "orderer/etcdraft",
+    "peer",
+    "peer/lifecycle",
+    "transientstore",
+  ]
+  pruneopts = "NUT"
+  revision = "c09017a7950bafbcd02c1c6a5ac1c71f1eaff239"
 
 [[projects]]
   branch = "master"
@@ -444,12 +494,12 @@
   version = "v1.0.1"
 
 [[projects]]
-  digest = "1:8173712f82b2da5dd36cdcbaa658f57fa8509634e5ecccbcfb948ecee051b0de"
+  digest = "1:d239a90a19b0e8f2b6f4d9515a8f8e7b2ccdc61c43fe2c9f57cd3fc3d6eee939"
   name = "github.com/miekg/pkcs11"
   packages = ["."]
   pruneopts = "NUT"
-  revision = "cb39313ec884f2cd77f4762875fe96aecf68f8e3"
-  version = "v1.0.2"
+  revision = "210dc1e16747c5ba98a03bcbcf728c38086ea357"
+  version = "v1.0.3"
 
 [[projects]]
   digest = "1:a45ae66dea4c899d79fceb116accfa1892105c251f0dcd9a217ddc276b42ec68"
@@ -567,7 +617,7 @@
   version = "v1.0.0"
 
 [[projects]]
-  digest = "1:3d7ad9c93ee2e43dc7dd48b76f96804c365be7fe30e75f7405028c4e633d189a"
+  digest = "1:097cc61836050f45cbb712ae3bb45d66fba464c16b8fac09907fa3c1f753eff6"
   name = "github.com/prometheus/client_golang"
   packages = [
     "prometheus",
@@ -575,8 +625,8 @@
     "prometheus/promhttp",
   ]
   pruneopts = "NUT"
-  revision = "2641b987480bca71fb39738eb8c8b0d577cb1d76"
-  version = "v0.9.4"
+  revision = "170205fb58decfd011f1550d4cfb737230d7ae4f"
+  version = "v1.1.0"
 
 [[projects]]
   branch = "master"
@@ -804,10 +854,9 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:f90b7107721bb4cf6d32bbaba6575b0741daffb9be17e22a8ed9afb989d605e3"
+  digest = "1:8dceb0c226ef5810bd2d51db196cef3efba52e87e6540331b2bcaa8f4be0d279"
   name = "golang.org/x/net"
   packages = [
-    "context",
     "html",
     "html/atom",
     "html/charset",
@@ -901,7 +950,7 @@
   revision = "eb59cef1c072c61ea4f7623910448d5e9c6a4455"
 
 [[projects]]
-  digest = "1:eeae08e293eb14baf135ba8227e50c3e488539c17e78d47fbfe0a6ada1b55779"
+  digest = "1:35a2be7619445f1285bfc82fdcb2a328d389e98e6df127d1365d025749d94c4e"
   name = "google.golang.org/grpc"
   packages = [
     ".",
@@ -935,13 +984,14 @@
     "resolver",
     "resolver/dns",
     "resolver/passthrough",
+    "serviceconfig",
     "stats",
     "status",
     "tap",
   ]
   pruneopts = "NUT"
-  revision = "501c41df7f472c740d0674ff27122f3f48c80ce7"
-  version = "v1.21.1"
+  revision = "f6d0f9ee430895e87ef1ceb5ac8f39725bafceef"
+  version = "v1.24.0"
 
 [[projects]]
   digest = "1:22b2dee6f30bc8601f087449a2a819df8388e54e9547349c658f14d8f8c590f2"
@@ -993,6 +1043,7 @@
     "github.com/Knetic/govaluate",
     "github.com/Shopify/sarama",
     "github.com/Shopify/sarama/mocks",
+    "github.com/VictoriaMetrics/fastcache",
     "github.com/davecgh/go-spew/spew",
     "github.com/fsouza/go-dockerclient",
     "github.com/go-kit/kit/metrics",
@@ -1011,7 +1062,22 @@
     "github.com/hashicorp/go-version",
     "github.com/hyperledger/fabric-amcl/amcl",
     "github.com/hyperledger/fabric-amcl/amcl/FP256BN",
+    "github.com/hyperledger/fabric-chaincode-go/pkg/statebased",
+    "github.com/hyperledger/fabric-chaincode-go/shim",
+    "github.com/hyperledger/fabric-chaincode-go/shimtest",
     "github.com/hyperledger/fabric-lib-go/healthz",
+    "github.com/hyperledger/fabric-protos-go/common",
+    "github.com/hyperledger/fabric-protos-go/discovery",
+    "github.com/hyperledger/fabric-protos-go/gossip",
+    "github.com/hyperledger/fabric-protos-go/ledger/queryresult",
+    "github.com/hyperledger/fabric-protos-go/ledger/rwset",
+    "github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset",
+    "github.com/hyperledger/fabric-protos-go/msp",
+    "github.com/hyperledger/fabric-protos-go/orderer",
+    "github.com/hyperledger/fabric-protos-go/orderer/etcdraft",
+    "github.com/hyperledger/fabric-protos-go/peer",
+    "github.com/hyperledger/fabric-protos-go/peer/lifecycle",
+    "github.com/hyperledger/fabric-protos-go/transientstore",
     "github.com/kr/pretty",
     "github.com/miekg/pkcs11",
     "github.com/mitchellh/mapstructure",
@@ -1054,7 +1120,6 @@
     "go.uber.org/zap/zaptest/observer",
     "golang.org/x/crypto/sha3",
     "golang.org/x/lint/golint",
-    "golang.org/x/net/context",
     "golang.org/x/tools/cmd/goimports",
     "golang.org/x/tools/go/packages",
     "google.golang.org/grpc",

@@ -12,10 +12,10 @@ package endorser
 import (
 	"testing"
 
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/mock"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -47,8 +47,7 @@ func TestAssemblePvtRWSet(t *testing.T) {
 		},
 		nil,
 	)
-
-	assembler := rwSetAssembler{}
+	mockDeployedCCInfoProvider.AllCollectionsConfigPkgReturns(collectionsConfigCC1, nil)
 
 	privData := &rwset.TxPvtReadWriteSet{
 		DataModel: rwset.TxReadWriteSet_KV,
@@ -65,7 +64,7 @@ func TestAssemblePvtRWSet(t *testing.T) {
 		},
 	}
 
-	pvtReadWriteSetWithConfigInfo, err := assembler.AssemblePvtRWSet("", privData, nil, mockDeployedCCInfoProvider)
+	pvtReadWriteSetWithConfigInfo, err := AssemblePvtRWSet("", privData, nil, mockDeployedCCInfoProvider)
 	assert.NoError(t, err)
 	assert.NotNil(t, pvtReadWriteSetWithConfigInfo)
 	assert.NotNil(t, pvtReadWriteSetWithConfigInfo.PvtRwset)

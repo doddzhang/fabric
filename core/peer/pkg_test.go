@@ -18,6 +18,9 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	mspproto "github.com/hyperledger/fabric-protos-go/msp"
+	pb "github.com/hyperledger/fabric-protos-go/peer"
 	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/comm/testpb"
@@ -25,9 +28,6 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/core/peer"
 	"github.com/hyperledger/fabric/msp"
-	cb "github.com/hyperledger/fabric/protos/common"
-	mspproto "github.com/hyperledger/fabric/protos/msp"
-	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -89,6 +89,18 @@ func createMSPConfig(rootCerts, tlsRootCerts, tlsIntermediateCerts [][]byte,
 		TlsRootCerts:         tlsRootCerts,
 		TlsIntermediateCerts: tlsIntermediateCerts,
 		Name:                 mspID,
+		FabricNodeOus: &mspproto.FabricNodeOUs{
+			Enable: true,
+			ClientOuIdentifier: &mspproto.FabricOUIdentifier{
+				OrganizationalUnitIdentifier: "client",
+			},
+			PeerOuIdentifier: &mspproto.FabricOUIdentifier{
+				OrganizationalUnitIdentifier: "peer",
+			},
+			AdminOuIdentifier: &mspproto.FabricOUIdentifier{
+				OrganizationalUnitIdentifier: "admin",
+			},
+		},
 	}
 
 	fmpsjs, err := proto.Marshal(fmspconf)
@@ -172,7 +184,7 @@ func TestUpdateRootsFromConfigBlock(t *testing.T) {
 	peerInstance.CredentialSupport = comm.NewCredentialSupport()
 
 	createChannel := func(t *testing.T, cid string, block *cb.Block) {
-		err = peerInstance.CreateChannel(block, nil, &mock.DeployedChaincodeInfoProvider{}, nil, nil)
+		err = peerInstance.CreateChannel(cid, block, &mock.DeployedChaincodeInfoProvider{}, nil, nil)
 		if err != nil {
 			t.Fatalf("Failed to create config block (%s)", err)
 		}

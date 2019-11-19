@@ -101,6 +101,13 @@ func (client *GRPCClient) parseSecureOptions(opts SecureOptions) error {
 				"are required when using mutual TLS")
 		}
 	}
+
+	if opts.TimeShift > 0 {
+		client.tlsConfig.Time = func() time.Time {
+			return time.Now().Add((-1) * opts.TimeShift)
+		}
+	}
+
 	return nil
 }
 
@@ -154,11 +161,24 @@ func (client *GRPCClient) SetServerRootCAs(serverRoots [][]byte) error {
 	return nil
 }
 
+type TLSOption func(tlsConfig *tls.Config)
+
+func ServerNameOverride(name string) TLSOption {
+	return func(tlsConfig *tls.Config) {
+		tlsConfig.ServerName = name
+	}
+}
+
+func CertPoolOverride(pool *x509.CertPool) TLSOption {
+	return func(tlsConfig *tls.Config) {
+		tlsConfig.RootCAs = pool
+	}
+}
+
 // NewConnection returns a grpc.ClientConn for the target address and
 // overrides the server name used to verify the hostname on the
 // certificate returned by a server when using TLS
-func (client *GRPCClient) NewConnection(address string, serverNameOverride string) (
-	*grpc.ClientConn, error) {
+func (client *GRPCClient) NewConnection(address string, tlsOptions ...TLSOption) (*grpc.ClientConn, error) {
 
 	var dialOpts []grpc.DialOption
 	dialOpts = append(dialOpts, client.dialOpts...)
@@ -168,16 +188,21 @@ func (client *GRPCClient) NewConnection(address string, serverNameOverride strin
 	// SetServerRootCAs / SetMaxRecvMsgSize / SetMaxSendMsgSize
 	//  to take effect on a per connection basis
 	if client.tlsConfig != nil {
-		client.tlsConfig.ServerName = serverNameOverride
-		dialOpts = append(dialOpts,
-			grpc.WithTransportCredentials(
-				credentials.NewTLS(client.tlsConfig)))
+		tlsConfigCopy := client.tlsConfig.Clone()
+		for _, tlsOption := range tlsOptions {
+			tlsOption(tlsConfigCopy)
+		}
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(
+			credentials.NewTLS(tlsConfigCopy),
+		))
 	} else {
 		dialOpts = append(dialOpts, grpc.WithInsecure())
 	}
+
 	dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(
 		grpc.MaxCallRecvMsgSize(client.maxRecvMsgSize),
-		grpc.MaxCallSendMsgSize(client.maxSendMsgSize)))
+		grpc.MaxCallSendMsgSize(client.maxSendMsgSize),
+	))
 
 	ctx, cancel := context.WithTimeout(context.Background(), client.timeout)
 	defer cancel()

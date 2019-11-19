@@ -11,10 +11,9 @@ import (
 	"os"
 	"testing"
 
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
-	"github.com/hyperledger/fabric/core/chaincode/platforms"
-	"github.com/hyperledger/fabric/core/chaincode/platforms/golang"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/cceventmgmt"
 	"github.com/hyperledger/fabric/core/ledger/mock"
@@ -26,7 +25,11 @@ func TestLedgerMgmt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create ledger directory: %s", err)
 	}
-	initializer := constructDefaultInitializer(testDir)
+	initializer, err := constructDefaultInitializer(testDir)
+	if err != nil {
+		t.Fatalf("Failed to create default initializer: %s", err)
+	}
+
 	ledgerMgr := NewLedgerMgr(initializer)
 	defer func() {
 		os.RemoveAll(testDir)
@@ -35,8 +38,9 @@ func TestLedgerMgmt(t *testing.T) {
 	numLedgers := 10
 	ledgers := make([]ledger.PeerLedger, numLedgers)
 	for i := 0; i < numLedgers; i++ {
-		gb, _ := test.MakeGenesisBlock(constructTestLedgerID(i))
-		l, err := ledgerMgr.CreateLedger(gb)
+		cid := constructTestLedgerID(i)
+		gb, _ := test.MakeGenesisBlock(cid)
+		l, err := ledgerMgr.CreateLedger(cid, gb)
 		assert.NoError(t, err)
 		ledgers[i] = l
 	}
@@ -54,17 +58,20 @@ func TestLedgerMgmt(t *testing.T) {
 
 	l := ledgers[2]
 	l.Close()
-	l, err = ledgerMgr.OpenLedger(ledgerID)
+	// attempt to close the same ledger twice and ensure it doesn't panic
+	assert.NotPanics(t, l.Close)
+
+	_, err = ledgerMgr.OpenLedger(ledgerID)
 	assert.NoError(t, err)
 
-	l, err = ledgerMgr.OpenLedger(ledgerID)
+	_, err = ledgerMgr.OpenLedger(ledgerID)
 	assert.Equal(t, ErrLedgerAlreadyOpened, err)
 	// close all opened ledgers and ledger mgmt
 	ledgerMgr.Close()
 
 	// Recreate LedgerMgr with existing ledgers
 	ledgerMgr = NewLedgerMgr(initializer)
-	l, err = ledgerMgr.OpenLedger(ledgerID)
+	_, err = ledgerMgr.OpenLedger(ledgerID)
 	assert.NoError(t, err)
 	ledgerMgr.Close()
 }
@@ -74,7 +81,11 @@ func TestChaincodeInfoProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create ledger directory: %s", err)
 	}
-	initializer := constructDefaultInitializer(testDir)
+	initializer, err := constructDefaultInitializer(testDir)
+	if err != nil {
+		t.Fatalf("Failed to create default initializer: %s", err)
+	}
+
 	ledgerMgr := NewLedgerMgr(initializer)
 	defer func() {
 		ledgerMgr.Close()
@@ -82,7 +93,7 @@ func TestChaincodeInfoProvider(t *testing.T) {
 	}()
 
 	gb, _ := test.MakeGenesisBlock("ledger1")
-	ledgerMgr.CreateLedger(gb)
+	ledgerMgr.CreateLedger("ledger1", gb)
 
 	mockDeployedCCInfoProvider := &mock.DeployedChaincodeInfoProvider{}
 	mockDeployedCCInfoProvider.ChaincodeInfoStub = func(channelName, ccName string, qe ledger.SimpleQueryExecutor) (*ledger.DeployedChaincodeInfo, error) {
@@ -91,7 +102,6 @@ func TestChaincodeInfoProvider(t *testing.T) {
 
 	ccInfoProvider := &chaincodeInfoProviderImpl{
 		ledgerMgr,
-		platforms.NewRegistry(&golang.Platform{}),
 		mockDeployedCCInfoProvider,
 	}
 	_, err = ccInfoProvider.GetDeployedChaincodeInfo("ledger2", constructTestCCDef("cc2", "1.0", "cc2Hash"))
@@ -111,7 +121,11 @@ func TestChaincodeInfoProvider(t *testing.T) {
 	assert.Equal(t, constructTestCCInfo("cc1", "cc1", "cc1"), ccInfo)
 }
 
-func constructDefaultInitializer(testDir string) *Initializer {
+func constructDefaultInitializer(testDir string) (*Initializer, error) {
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	if err != nil {
+		return nil, err
+	}
 	return &Initializer{
 		Config: &ledger.Config{
 			RootFSPath:    testDir,
@@ -126,10 +140,10 @@ func constructDefaultInitializer(testDir string) *Initializer {
 			},
 		},
 
-		PlatformRegistry:              platforms.NewRegistry(&golang.Platform{}),
 		MetricsProvider:               &disabled.Provider{},
 		DeployedChaincodeInfoProvider: &mock.DeployedChaincodeInfoProvider{},
-	}
+		Hasher:                        cryptoProvider,
+	}, nil
 }
 
 func constructTestLedgerID(i int) string {

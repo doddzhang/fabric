@@ -9,15 +9,16 @@ package lifecycle
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset"
+	"github.com/hyperledger/fabric-protos-go/msp"
+	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/cauthdsl"
 	"github.com/hyperledger/fabric/common/util"
 	validationState "github.com/hyperledger/fabric/core/handlers/validation/api/state"
 	"github.com/hyperledger/fabric/core/ledger"
-	cb "github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
-	"github.com/hyperledger/fabric/protos/msp"
-	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protoutil"
 
 	"github.com/pkg/errors"
@@ -90,22 +91,48 @@ func (vc *ValidatorCommitter) ChaincodeInfo(channelName, chaincodeName string, q
 		return vc.LegacyDeployedCCInfoProvider.ChaincodeInfo(channelName, chaincodeName, qe)
 	}
 
-	ic, err := vc.ChaincodeImplicitCollections(channelName)
-	if err != nil {
-		return nil, errors.WithMessage(err, "could not create implicit collections for channel")
-	}
-
 	return &ledger.DeployedChaincodeInfo{
 		Name:                        chaincodeName,
 		Version:                     definedChaincode.EndorsementInfo.Version,
 		Hash:                        util.ComputeSHA256([]byte(chaincodeName + ":" + definedChaincode.EndorsementInfo.Version)),
 		ExplicitCollectionConfigPkg: definedChaincode.Collections,
-		ImplicitCollections:         ic,
 		IsLegacy:                    false,
 	}, nil
 }
 
 var ImplicitCollectionMatcher = regexp.MustCompile("^" + ImplicitCollectionNameForOrg("(.+)") + "$")
+
+// AllCollectionsConfigPkg implements function in interface ledger.DeployedChaincodeInfoProvider
+// this implementation returns a combined collection config pkg that contains both explicit and implicit collections
+func (vc *ValidatorCommitter) AllCollectionsConfigPkg(channelName, chaincodeName string, qe ledger.SimpleQueryExecutor) (*cb.CollectionConfigPackage, error) {
+	chaincodeInfo, err := vc.ChaincodeInfo(channelName, chaincodeName, qe)
+	if err != nil {
+		return nil, err
+	}
+	explicitCollectionConfigPkg := chaincodeInfo.ExplicitCollectionConfigPkg
+
+	if chaincodeInfo.IsLegacy {
+		return explicitCollectionConfigPkg, nil
+	}
+
+	implicitCollections, err := vc.ImplicitCollections(channelName, chaincodeName, qe)
+	if err != nil {
+		return nil, err
+	}
+
+	var combinedColls []*cb.CollectionConfig
+	if explicitCollectionConfigPkg != nil {
+		combinedColls = append(combinedColls, explicitCollectionConfigPkg.Config...)
+	}
+	for _, implicitColl := range implicitCollections {
+		c := &cb.CollectionConfig{}
+		c.Payload = &cb.CollectionConfig_StaticCollectionConfig{StaticCollectionConfig: implicitColl}
+		combinedColls = append(combinedColls, c)
+	}
+	return &cb.CollectionConfigPackage{
+		Config: combinedColls,
+	}, nil
+}
 
 // CollectionInfo implements function in interface ledger.DeployedChaincodeInfoProvider, it returns config for
 // both static and implicit collections.
@@ -190,6 +217,10 @@ func GenerateImplicitCollectionForOrg(mspid string) *cb.StaticCollectionConfig {
 
 func ImplicitCollectionNameForOrg(mspid string) string {
 	return fmt.Sprintf("_implicit_org_%s", mspid)
+}
+
+func OrgFromImplicitCollectionName(name string) string {
+	return strings.TrimPrefix(name, "_implicit_org_")
 }
 
 func (vc *ValidatorCommitter) ImplicitCollectionEndorsementPolicyAsBytes(channelID, orgMSPID string) (policy []byte, unexpectedErr, validationErr error) {

@@ -10,11 +10,11 @@ import (
 	"context"
 	"sync"
 
+	proto "github.com/hyperledger/fabric-protos-go/gossip"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/metrics"
 	"github.com/hyperledger/fabric/gossip/protoext"
 	"github.com/hyperledger/fabric/gossip/util"
-	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 )
@@ -87,6 +87,9 @@ func (cs *connectionStore) getConnection(peer *RemotePeer) (*connection, error) 
 	cs.RUnlock()
 
 	createdConnection, err := cs.connFactory.createConnection(endpoint, pkiID)
+	if err == nil {
+		cs.logger.Debugf("Created new connection to %s, %s", endpoint, pkiID)
+	}
 
 	destinationLock.Unlock()
 
@@ -114,6 +117,16 @@ func (cs *connectionStore) getConnection(peer *RemotePeer) (*connection, error) 
 	// no one connected to us AND we failed connecting!
 	if err != nil {
 		return nil, err
+	}
+
+	// At this point we know the latest PKI-ID of the remote peer.
+	// Perhaps we are trying to connect to a peer that changed its PKI-ID.
+	// Ensure that we are not already connected to that PKI-ID,
+	// and if so - close the old connection in order to keep the latest one.
+	// We keep the latest one because the remote peer is going to close
+	// our old connection anyway once it sensed this connection handshake.
+	if conn, exists := cs.pki2Conn[string(createdConnection.pkiID)]; exists {
+		conn.close()
 	}
 
 	// at this point in the code, we created a connection to a remote peer
@@ -206,18 +219,11 @@ type connection struct {
 	gossipStream stream             // there can only be one
 	stopChan     chan struct{}      // a method to stop the server-side gRPC call from a different go-routine
 	stopOnce     sync.Once          // once to ensure close is called only once
-	sync.RWMutex                    // synchronizes access to shared variables
-	stopWG       sync.WaitGroup     // a method to wait for stream activity to stop before closing it
 }
 
 func (conn *connection) close() {
 	conn.stopOnce.Do(func() {
 		close(conn.stopChan)
-
-		conn.Lock()
-		defer conn.Unlock()
-
-		conn.stopWG.Wait()
 
 		if conn.conn != nil {
 			conn.conn.Close()
@@ -279,15 +285,6 @@ func (conn *connection) serviceConnection() error {
 }
 
 func (conn *connection) writeToStream() {
-	conn.Lock()
-	select {
-	case <-conn.stopChan:
-	default:
-		conn.stopWG.Add(1) // wait for write to finish before calling conn.close()
-		defer conn.stopWG.Done()
-	}
-	conn.Unlock()
-
 	stream := conn.gossipStream
 	for {
 		select {
@@ -324,7 +321,10 @@ func (conn *connection) readFromStream(errChan chan error, msgChan chan *protoex
 				errChan <- err
 				conn.logger.Warningf("Got error, aborting: %v", err)
 			}
-			msgChan <- msg
+			select {
+			case <-conn.stopChan:
+			case msgChan <- msg:
+			}
 		}
 	}
 }

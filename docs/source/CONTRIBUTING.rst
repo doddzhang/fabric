@@ -1,3 +1,22 @@
+.. note::
+
+   The following repositories now use GitHub for source control.
+   Please see the :doc:`GitHub Contributions <github/github>` page for
+   contribution guidelines for these repositories:
+
+   - `Fabric-CA <https://github.com/hyperledger/fabric-ca>`_
+   - `Fabric-Chaincode-EVM <https://github.com/hyperledger/fabric-chaincode-evm>`_
+   - `Fabric-Chaincode-Go <https://github.com/hyperledger/fabric-chaincode-go>`_
+   - `Fabric-Chaincode-Java <https://github.com/hyperledger/fabric-chaincode-java>`_
+   - `Fabric-Chaincode-Node <https://github.com/hyperledger/fabric-chaincode-node>`_
+   - `Fabric-Gateway-Java <https://github.com/hyperledger/fabric-gateway-java>`_
+   - `Fabric-Protos <https://github.com/hyperledger/fabric-protos>`_
+   - `Fabric-Samples <https://github.com/hyperledger/fabric-samples>`_
+   - `Fabric-SDK-Go <https://github.com/hyperledger/fabric-sdk-go>`_
+   - `Fabric-SDK-Java <https://github.com/hyperledger/fabric-sdk-java>`_
+
+=====================
+
 Contributions Welcome!
 ======================
 
@@ -80,7 +99,7 @@ approved.
 Maintainers
 ~~~~~~~~~~~
 
-The Fabric project is lead by the project's top level :doc:`maintainers <MAINTAINERS>`.
+The Fabric project is lead by the project's top level `maintainers <https://github.com/hyperledger/fabric/blob/master/MAINTAINERS.md>`__.
 The maintainers are responsible for reviewing and merging all patches submitted
 for review, and they guide the overall technical direction of the project within
 the guidelines established by the Hyperledger Technical Steering Committee (TSC).
@@ -90,7 +109,7 @@ Becoming a maintainer
 
 The project's maintainers will, from time-to-time, consider
 adding or removing a maintainer. An existing maintainer can submit a
-change set to the :doc:`MAINTAINERS.rst <MAINTAINERS>` file. A nominated
+change set to the `maintainers <https://github.com/hyperledger/fabric/blob/master/MAINTAINERS.md>`__ file. A nominated
 Contributor may become a Maintainer by a majority approval of the proposal
 by the existing Maintainers. Once approved, the change set is then merged
 and the individual is added to (or alternatively, removed from) the maintainers
@@ -205,7 +224,9 @@ the defect fixed.
 .. note:: If the defect is security-related, please follow the Hyperledger
           `security bug reporting process <https://wiki.hyperledger.org/display/HYP/Defect+Response>`__.
 
-If it has not been previously reported, create a new JIRA. Please try to provide
+If it has not been previously reported, you may either submit a CR with a
+well documented commit message describing the defect and the fix, or you 
+may create a new JIRA. Please try to provide
 sufficient information for someone else to reproduce the
 issue. One of the project's maintainers should respond to your issue within 24
 hours. If not, please bump the issue with a comment and request that it be

@@ -7,9 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 package privdata
 
 import (
+	"github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/msp"
-	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protoutil"
 )
 
@@ -36,7 +36,7 @@ func (m *MembershipProvider) AmMemberOf(channelName string, collectionPolicyConf
 		logger.Errorf("Reject all due to error getting policy: %s", err)
 		return false, nil
 	}
-	if err := accessPolicy.Evaluate([]*protoutil.SignedData{&m.selfSignedData}); err != nil {
+	if err := accessPolicy.EvaluateSignedData([]*protoutil.SignedData{&m.selfSignedData}); err != nil {
 		return false, nil
 	}
 	return true, nil

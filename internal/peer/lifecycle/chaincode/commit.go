@@ -13,11 +13,12 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	pb "github.com/hyperledger/fabric-protos-go/peer"
+	lb "github.com/hyperledger/fabric-protos-go/peer/lifecycle"
+	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/internal/peer/chaincode"
 	"github.com/hyperledger/fabric/internal/peer/common"
-	cb "github.com/hyperledger/fabric/protos/common"
-	pb "github.com/hyperledger/fabric/protos/peer"
-	lb "github.com/hyperledger/fabric/protos/peer/lifecycle"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -79,7 +80,7 @@ func (c *CommitInput) Validate() error {
 }
 
 // CommitCmd returns the cobra command for chaincode Commit
-func CommitCmd(c *Committer) *cobra.Command {
+func CommitCmd(c *Committer, cryptoProvider bccsp.BCCSP) *cobra.Command {
 	chaincodeCommitCmd := &cobra.Command{
 		Use:   "commit",
 		Short: fmt.Sprintf("Commit the chaincode definition on the channel."),
@@ -103,7 +104,7 @@ func CommitCmd(c *Committer) *cobra.Command {
 					TLSEnabled:            viper.GetBool("peer.tls.enabled"),
 				}
 
-				cc, err := NewClientConnections(ccInput)
+				cc, err := NewClientConnections(ccInput, cryptoProvider)
 				if err != nil {
 					return err
 				}

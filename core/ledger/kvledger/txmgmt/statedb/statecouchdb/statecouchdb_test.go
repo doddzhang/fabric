@@ -8,14 +8,16 @@ package statecouchdb
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/ledger/dataformat"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
+	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb/commontests"
@@ -23,6 +25,7 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/util/couchdb"
 	"github.com/hyperledger/fabric/integration/runner"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMain(m *testing.M) {
@@ -656,75 +659,6 @@ func TestPaginatedQueryValidation(t *testing.T) {
 	assert.Error(t, err, "An should have been thrown for an invalid options")
 }
 
-func TestLSCCStateCache(t *testing.T) {
-	env := NewTestVDBEnv(t)
-	defer env.Cleanup()
-
-	db, err := env.DBProvider.GetDBHandle("testinit")
-	assert.NoError(t, err)
-	db.Open()
-	defer db.Close()
-
-	// Scenario 1: Storing two keys in the lscc name space.
-	// Checking whether the cache is populated correctly during
-	// GetState()
-	batch := statedb.NewUpdateBatch()
-	batch.Put("lscc", "key1", []byte("value1"), version.NewHeight(1, 1))
-	batch.Put("lscc", "key2", []byte("value2"), version.NewHeight(1, 1))
-
-	savePoint := version.NewHeight(1, 1)
-	db.ApplyUpdates(batch, savePoint)
-
-	// cache should not contain key1 and key2
-	assert.Nil(t, db.(*VersionedDB).lsccStateCache.getState("key1"))
-	assert.Nil(t, db.(*VersionedDB).lsccStateCache.getState("key2"))
-
-	// GetState() populates the cache
-	valueFromDB, err := db.GetState("lscc", "key1")
-	assert.NoError(t, err)
-	valueFromCache := db.(*VersionedDB).lsccStateCache.getState("key1")
-	assert.Equal(t, valueFromCache, valueFromDB)
-
-	// Scenario 2: updates an existing key in lscc namespace. Note that the
-	// key in lsccStateCache should be updated
-	batch = statedb.NewUpdateBatch()
-	batch.Put("lscc", "key1", []byte("new-value1"), version.NewHeight(1, 2))
-	savePoint = version.NewHeight(1, 2)
-	db.ApplyUpdates(batch, savePoint)
-
-	valueFromCache = db.(*VersionedDB).lsccStateCache.getState("key1")
-	expectedValue := &statedb.VersionedValue{Value: []byte("new-value1"), Version: version.NewHeight(1, 2)}
-	assert.Equal(t, expectedValue, valueFromCache)
-
-	// Scenario 3: adds LsccCacheSize number of keys in lscc namespace.
-	// Read all keys in lscc namespace to make the cache full. This is to
-	// test the eviction.
-	batch = statedb.NewUpdateBatch()
-	for i := 0; i < lsccCacheSize; i++ {
-		batch.Put("lscc", "key"+strconv.Itoa(i), []byte("value"+strconv.Itoa(i)), version.NewHeight(1, 3))
-	}
-	savePoint = version.NewHeight(1, 3)
-	db.ApplyUpdates(batch, savePoint)
-
-	for i := 0; i < lsccCacheSize; i++ {
-		_, err := db.GetState("lscc", "key"+strconv.Itoa(i))
-		assert.NoError(t, err)
-	}
-	assert.Equal(t, true, db.(*VersionedDB).lsccStateCache.isCacheFull())
-
-	batch = statedb.NewUpdateBatch()
-	batch.Put("lscc", "key50", []byte("value1"), version.NewHeight(1, 4))
-	savePoint = version.NewHeight(1, 4)
-	db.ApplyUpdates(batch, savePoint)
-
-	// GetState() populates the cache after a eviction
-	valueFromDB, err = db.GetState("lscc", "key50")
-	assert.NoError(t, err)
-	valueFromCache = db.(*VersionedDB).lsccStateCache.getState("key50")
-	assert.Equal(t, valueFromCache, valueFromDB)
-	assert.Equal(t, true, db.(*VersionedDB).lsccStateCache.isCacheFull())
-}
-
 func TestApplyUpdatesWithNilHeight(t *testing.T) {
 	env := NewTestVDBEnv(t)
 	defer env.Cleanup()
@@ -800,4 +734,111 @@ func assertQueryResults(t *testing.T, results []*couchdb.QueryResult, expectedId
 		actualIds = append(actualIds, res.ID)
 	}
 	assert.Equal(t, expectedIds, actualIds)
+}
+
+func TestFormatCheck(t *testing.T) {
+	testCases := []struct {
+		dataFormat     string                         // precondition
+		dataExists     bool                           // precondition
+		expectedFormat string                         // postcondition
+		expectedErr    *dataformat.ErrVersionMismatch // postcondition
+	}{
+		{
+			dataFormat: "",
+			dataExists: true,
+			expectedErr: &dataformat.ErrVersionMismatch{
+				DBInfo:          "CouchDB for state database",
+				Version:         "",
+				ExpectedVersion: "2.0",
+			},
+			expectedFormat: "does not matter as the test should not reach to check this",
+		},
+
+		{
+			dataFormat:     "",
+			dataExists:     false,
+			expectedErr:    nil,
+			expectedFormat: dataformat.Version20,
+		},
+
+		{
+			dataFormat:     dataformat.Version20,
+			dataExists:     false,
+			expectedFormat: dataformat.Version20,
+			expectedErr:    nil,
+		},
+
+		{
+			dataFormat:     dataformat.Version20,
+			dataExists:     true,
+			expectedFormat: dataformat.Version20,
+			expectedErr:    nil,
+		},
+
+		{
+			dataFormat: "3.0",
+			dataExists: true,
+			expectedErr: &dataformat.ErrVersionMismatch{
+				DBInfo:          "CouchDB for state database",
+				Version:         "3.0",
+				ExpectedVersion: dataformat.Version20,
+			},
+			expectedFormat: "does not matter as the test should not reach to check this",
+		},
+	}
+
+	for i, testCase := range testCases {
+		t.Run(
+			fmt.Sprintf("testCase %d", i),
+			func(t *testing.T) {
+				testFormatCheck(t, testCase.dataFormat, testCase.dataExists, testCase.expectedErr, testCase.expectedFormat)
+			})
+	}
+}
+
+func testFormatCheck(t *testing.T, dataFormat string, dataExists bool, expectedErr *dataformat.ErrVersionMismatch, expectedFormat string) {
+	redoPath, err := ioutil.TempDir("", "redoPath")
+	require.NoError(t, err)
+	defer os.RemoveAll(redoPath)
+	config := &couchdb.Config{
+		Address:             couchAddress,
+		MaxRetries:          3,
+		MaxRetriesOnStartup: 20,
+		RequestTimeout:      35 * time.Second,
+		RedoLogPath:         redoPath,
+	}
+	dbProvider, err := NewVersionedDBProvider(config, &disabled.Provider{})
+	require.NoError(t, err)
+
+	// create preconditions for test
+	if dataExists {
+		db, err := dbProvider.GetDBHandle("testns")
+		require.NoError(t, err)
+		batch := statedb.NewUpdateBatch()
+		batch.Put("testns", "testkey", []byte("testVal"), version.NewHeight(1, 1))
+		require.NoError(t, db.ApplyUpdates(batch, version.NewHeight(1, 1)))
+	}
+	if dataFormat == "" {
+		testutilDropDB(t, dbProvider.couchInstance, fabricInternalDBName)
+	} else {
+		require.NoError(t, writeDataFormatVersion(dbProvider.couchInstance, dataFormat))
+	}
+	dbProvider.Close()
+	defer cleanupDB(t, dbProvider.couchInstance)
+
+	// close and reopen with preconditions set and check the expected behavior
+	dbProvider, err = NewVersionedDBProvider(config, &disabled.Provider{})
+	if expectedErr != nil {
+		require.Equal(t, expectedErr, err)
+		return
+	}
+	require.NoError(t, err)
+	defer func() {
+		if dbProvider != nil {
+			dbProvider.Close()
+		}
+	}()
+	format, err := readDataformatVersion(dbProvider.couchInstance)
+	require.NoError(t, err)
+	require.Equal(t, expectedFormat, format)
 }

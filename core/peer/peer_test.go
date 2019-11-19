@@ -14,13 +14,17 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
-	mscc "github.com/hyperledger/fabric/common/mocks/scc"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/committer/txvalidator/plugin"
 	"github.com/hyperledger/fabric/core/deliverservice"
 	validation "github.com/hyperledger/fabric/core/handlers/validation/api"
+	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
+	"github.com/hyperledger/fabric/core/ledger/ledgermgmt/ledgermgmttest"
 	"github.com/hyperledger/fabric/core/ledger/mock"
 	ledgermocks "github.com/hyperledger/fabric/core/ledger/mock"
 	"github.com/hyperledger/fabric/core/transientstore"
@@ -48,9 +52,12 @@ func NewTestPeer(t *testing.T) (*Peer, func()) {
 	require.NoError(t, err, "failed to create temporary directory")
 
 	// Initialize gossip service
-	signer := mgmt.GetLocalSigningIdentityOrPanic()
-	messageCryptoService := peergossip.NewMCS(&mocks.ChannelPolicyManagerGetter{}, signer, mgmt.NewDeserializersManager())
-	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager())
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	signer := mgmt.GetLocalSigningIdentityOrPanic(cryptoProvider)
+
+	messageCryptoService := peergossip.NewMCS(&mocks.ChannelPolicyManagerGetter{}, signer, mgmt.NewDeserializersManager(cryptoProvider), cryptoProvider)
+	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager(cryptoProvider))
 	defaultSecureDialOpts := func() []grpc.DialOption { return []grpc.DialOption{grpc.WithInsecure()} }
 	defaultDeliverClientDialOpts := []grpc.DialOption{grpc.WithBlock()}
 	defaultDeliverClientDialOpts = append(
@@ -73,7 +80,7 @@ func NewTestPeer(t *testing.T) (*Peer, func()) {
 		secAdv,
 		defaultSecureDialOpts,
 		nil,
-		defaultDeliverClientDialOpts,
+		nil,
 		gossipConfig,
 		&service.ServiceConfig{},
 		&deliverservice.DeliverServiceConfig{
@@ -86,12 +93,16 @@ func NewTestPeer(t *testing.T) (*Peer, func()) {
 	ledgerMgr, err := constructLedgerMgrWithTestDefaults(filepath.Join(tempdir, "ledgersData"))
 	require.NoError(t, err, "failed to create ledger manager")
 
+	assert.NoError(t, err)
+	transientStoreProvider, err := transientstore.NewStoreProvider(
+		filepath.Join(tempdir, "transientstore"),
+	)
+	assert.NoError(t, err)
 	peerInstance := &Peer{
-		GossipService: gossipService,
-		StoreProvider: transientstore.NewStoreProvider(
-			filepath.Join(tempdir, "transientstore"),
-		),
-		LedgerMgr: ledgerMgr,
+		GossipService:  gossipService,
+		StoreProvider:  transientStoreProvider,
+		LedgerMgr:      ledgerMgr,
+		CryptoProvider: cryptoProvider,
 	}
 
 	cleanup := func() {
@@ -107,7 +118,6 @@ func TestInitialize(t *testing.T) {
 
 	peerInstance.Initialize(
 		nil,
-		(&mscc.MocksccProviderFactory{}).NewSystemChaincodeProvider(),
 		plugin.MapBasedMapper(map[string]validation.PluginFactory{}),
 		&ledgermocks.DeployedChaincodeInfoProvider{},
 		nil,
@@ -123,7 +133,6 @@ func TestCreateChannel(t *testing.T) {
 	var initArg string
 	peerInstance.Initialize(
 		func(cid string) { initArg = cid },
-		(&mscc.MocksccProviderFactory{}).NewSystemChaincodeProvider(),
 		plugin.MapBasedMapper(map[string]validation.PluginFactory{}),
 		&ledgermocks.DeployedChaincodeInfoProvider{},
 		nil,
@@ -138,7 +147,7 @@ func TestCreateChannel(t *testing.T) {
 		t.FailNow()
 	}
 
-	err = peerInstance.CreateChannel(block, nil, &mock.DeployedChaincodeInfoProvider{}, nil, nil)
+	err = peerInstance.CreateChannel(testChainID, block, &mock.DeployedChaincodeInfoProvider{}, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create chain %s", err)
 	}
@@ -193,4 +202,16 @@ func TestDeliverSupportManager(t *testing.T) {
 	peerInstance.channels = map[string]*Channel{"testchain": {}}
 	chainSupport = manager.GetChain("testchain")
 	assert.NotNil(t, chainSupport, "chain support should not be nil")
+}
+
+func constructLedgerMgrWithTestDefaults(ledgersDataDir string) (*ledgermgmt.LedgerMgr, error) {
+	ledgerInitializer := ledgermgmttest.NewInitializer(ledgersDataDir)
+
+	ledgerInitializer.CustomTxProcessors = map[common.HeaderType]ledger.CustomTxProcessor{
+		common.HeaderType_CONFIG: &ConfigTxProcessor{},
+	}
+	ledgerInitializer.Config.HistoryDBConfig = &ledger.HistoryDBConfig{
+		Enabled: true,
+	}
+	return ledgermgmt.NewLedgerMgr(ledgerInitializer), nil
 }

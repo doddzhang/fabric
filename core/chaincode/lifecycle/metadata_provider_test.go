@@ -7,15 +7,14 @@ SPDX-License-Identifier: Apache-2.0
 package lifecycle_test
 
 import (
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	lb "github.com/hyperledger/fabric-protos-go/peer/lifecycle"
 	"github.com/hyperledger/fabric/common/chaincode"
 	"github.com/hyperledger/fabric/core/chaincode/lifecycle"
 	"github.com/hyperledger/fabric/core/chaincode/lifecycle/mock"
-	cb "github.com/hyperledger/fabric/protos/common"
-	lb "github.com/hyperledger/fabric/protos/peer/lifecycle"
 	"github.com/pkg/errors"
 
 	"github.com/hyperledger/fabric/common/cauthdsl"
-	"github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protoutil"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -40,8 +39,8 @@ var _ = Describe("MetadataProvider", func() {
 					Version: "cc-version",
 				},
 				ValidationInfo: &lb.ChaincodeValidationInfo{
-					ValidationParameter: protoutil.MarshalOrPanic(&peer.ApplicationPolicy{
-						Type: &peer.ApplicationPolicy_SignaturePolicy{
+					ValidationParameter: protoutil.MarshalOrPanic(&cb.ApplicationPolicy{
+						Type: &cb.ApplicationPolicy_SignaturePolicy{
 							SignaturePolicy: cauthdsl.AcceptAllPolicy,
 						},
 					}),
@@ -115,8 +114,8 @@ var _ = Describe("MetadataProvider", func() {
 	Context("when the policy is of the channel reference type", func() {
 		BeforeEach(func() {
 			ccInfo.Definition.ValidationInfo.ValidationParameter = protoutil.MarshalOrPanic(
-				&peer.ApplicationPolicy{
-					Type: &peer.ApplicationPolicy_ChannelConfigPolicyReference{
+				&cb.ApplicationPolicy{
+					Type: &cb.ApplicationPolicy_ChannelConfigPolicyReference{
 						ChannelConfigPolicyReference: "barf",
 					},
 				})

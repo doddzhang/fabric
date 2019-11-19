@@ -14,9 +14,13 @@ import (
 	"strings"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/orderer"
+	etcdraftproto "github.com/hyperledger/fabric-protos-go/orderer/etcdraft"
+	"github.com/hyperledger/fabric/bccsp/sw"
+	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
 	"github.com/hyperledger/fabric/common/flogging"
-	mockconfig "github.com/hyperledger/fabric/common/mocks/config"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	clustermocks "github.com/hyperledger/fabric/orderer/common/cluster/mocks"
@@ -24,9 +28,6 @@ import (
 	"github.com/hyperledger/fabric/orderer/consensus/etcdraft"
 	"github.com/hyperledger/fabric/orderer/consensus/etcdraft/mocks"
 	consensusmocks "github.com/hyperledger/fabric/orderer/consensus/mocks"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/orderer"
-	etcdraftproto "github.com/hyperledger/fabric/protos/orderer/etcdraft"
 	"github.com/hyperledger/fabric/protoutil"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -34,6 +35,18 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
+
+//go:generate counterfeiter -o mocks/orderer_capabilities.go --fake-name OrdererCapabilities . ordererCapabilities
+
+type ordererCapabilities interface {
+	channelconfig.OrdererCapabilities
+}
+
+//go:generate counterfeiter -o mocks/orderer_config.go --fake-name OrdererConfig . ordererConfig
+
+type ordererConfig interface {
+	channelconfig.Orderer
+}
 
 var _ = Describe("Consenter", func() {
 	var (
@@ -99,9 +112,11 @@ var _ = Describe("Consenter", func() {
 	})
 
 	When("the consenter is asked for a chain", func() {
-		chainInstance := &etcdraft.Chain{}
+		cryptoProvider, _ := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+		chainInstance := &etcdraft.Chain{CryptoProvider: cryptoProvider}
 		cs := &multichannel.ChainSupport{
 			Chain: chainInstance,
+			BCCSP: cryptoProvider,
 		}
 		BeforeEach(func() {
 			chainGetter.On("GetChain", "mychannel").Return(cs)
@@ -159,10 +174,14 @@ var _ = Describe("Consenter", func() {
 			},
 		}
 		metadata := protoutil.MarshalOrPanic(m)
-		support.SharedConfigReturns(&mockconfig.Orderer{
-			ConsensusMetadataVal: metadata,
-			BatchSizeVal:         &orderer.BatchSize{PreferredMaxBytes: 2 * 1024 * 1024},
-		})
+		mockOrderer := &mocks.OrdererConfig{}
+		mockOrderer.ConsensusMetadataReturns(metadata)
+		mockOrderer.BatchSizeReturns(
+			&orderer.BatchSize{
+				PreferredMaxBytes: 2 * 1024 * 1024,
+			},
+		)
+		support.SharedConfigReturns(mockOrderer)
 
 		consenter := newConsenter(chainGetter)
 		consenter.EtcdRaftConfig.WALDir = walDir
@@ -199,11 +218,15 @@ var _ = Describe("Consenter", func() {
 		}
 		metadata := protoutil.MarshalOrPanic(m)
 		support := &consensusmocks.FakeConsenterSupport{}
-		support.SharedConfigReturns(&mockconfig.Orderer{
-			ConsensusMetadataVal: metadata,
-			BatchSizeVal:         &orderer.BatchSize{PreferredMaxBytes: 2 * 1024 * 1024},
-		})
-		support.ChainIDReturns("foo")
+		mockOrderer := &mocks.OrdererConfig{}
+		mockOrderer.ConsensusMetadataReturns(metadata)
+		mockOrderer.BatchSizeReturns(
+			&orderer.BatchSize{
+				PreferredMaxBytes: 2 * 1024 * 1024,
+			},
+		)
+		support.SharedConfigReturns(mockOrderer)
+		support.ChannelIDReturns("foo")
 
 		consenter := newConsenter(chainGetter)
 
@@ -221,10 +244,14 @@ var _ = Describe("Consenter", func() {
 			},
 		}
 		metadata := protoutil.MarshalOrPanic(m)
-		support.SharedConfigReturns(&mockconfig.Orderer{
-			ConsensusMetadataVal: metadata,
-			BatchSizeVal:         &orderer.BatchSize{PreferredMaxBytes: 2 * 1024 * 1024},
-		})
+		mockOrderer := &mocks.OrdererConfig{}
+		mockOrderer.ConsensusMetadataReturns(metadata)
+		mockOrderer.BatchSizeReturns(
+			&orderer.BatchSize{
+				PreferredMaxBytes: 2 * 1024 * 1024,
+			},
+		)
+		support.SharedConfigReturns(mockOrderer)
 
 		consenter := newConsenter(chainGetter)
 
@@ -246,207 +273,21 @@ var _ = Describe("Consenter", func() {
 			},
 		}
 		metadata := protoutil.MarshalOrPanic(m)
-		support.SharedConfigReturns(&mockconfig.Orderer{
-			ConsensusMetadataVal: metadata,
-			CapabilitiesVal:      &mockconfig.OrdererCapabilities{},
-			BatchSizeVal:         &orderer.BatchSize{PreferredMaxBytes: 2 * 1024 * 1024},
-		})
+		mockOrderer := &mocks.OrdererConfig{}
+		mockOrderer.ConsensusMetadataReturns(metadata)
+		mockOrderer.BatchSizeReturns(
+			&orderer.BatchSize{
+				PreferredMaxBytes: 2 * 1024 * 1024,
+			},
+		)
+		mockOrderer.CapabilitiesReturns(&mocks.OrdererCapabilities{})
+		support.SharedConfigReturns(mockOrderer)
 
 		consenter := newConsenter(chainGetter)
 
 		chain, err := consenter.HandleChain(support, nil)
 		Expect(chain).To(BeNil())
 		Expect(err).To(MatchError("failed to parse TickInterval (500) to time duration"))
-	})
-})
-
-var _ = Describe("Metadata Validation", func() {
-	var (
-		consenter *consenter
-	)
-
-	BeforeEach(func() {
-		consenter = newConsenter(nil)
-	})
-
-	When("determining parameter well-formedness", func() {
-		It("succeeds when new consensus metadata is nil", func() {
-			Expect(consenter.ValidateConsensusMetadata(nil, nil, false)).To(Succeed())
-		})
-
-		It("fails when new consensus metadata is not nil while old consensus metadata is nil", func() {
-			Expect(func() {
-				consenter.ValidateConsensusMetadata(nil, []byte("test"), false)
-			}).To(Panic())
-		})
-
-		It("fails when old consensus metadata is not well-formed", func() {
-			Expect(func() {
-				consenter.ValidateConsensusMetadata([]byte("test"), []byte("test"), false)
-			}).To(Panic())
-		})
-
-		It("fails when new consensus metadata is not well-formed", func() {
-			oldBytes, _ := proto.Marshal(&etcdraftproto.ConfigMetadata{})
-			Expect(consenter.ValidateConsensusMetadata(oldBytes, []byte("test"), false)).NotTo(Succeed())
-		})
-	})
-
-	Context("valid old consensus metadata", func() {
-		var (
-			oldBytes    []byte
-			oldMetadata *etcdraftproto.ConfigMetadata
-			newMetadata *etcdraftproto.ConfigMetadata
-			tlsCA       tlsgen.CA
-			newChannel  bool
-		)
-
-		BeforeEach(func() {
-			tlsCA, _ = tlsgen.NewCA()
-			oldMetadata = &etcdraftproto.ConfigMetadata{
-				Options: &etcdraftproto.Options{
-					TickInterval:         "500ms",
-					ElectionTick:         10,
-					HeartbeatTick:        1,
-					MaxInflightBlocks:    5,
-					SnapshotIntervalSize: 20 * 1024 * 1024, // 20 MB
-				},
-				Consenters: []*etcdraftproto.Consenter{
-					{
-						Host:          "host1",
-						Port:          10001,
-						ClientTlsCert: clientTLSCert(tlsCA),
-						ServerTlsCert: serverTLSCert(tlsCA),
-					},
-					{
-						Host:          "host2",
-						Port:          10002,
-						ClientTlsCert: clientTLSCert(tlsCA),
-						ServerTlsCert: serverTLSCert(tlsCA),
-					},
-					{
-						Host:          "host3",
-						Port:          10003,
-						ClientTlsCert: clientTLSCert(tlsCA),
-						ServerTlsCert: serverTLSCert(tlsCA),
-					},
-				},
-			}
-			newMetadata = oldMetadata
-			oldBytes, _ = proto.Marshal(oldMetadata)
-			newChannel = false
-		})
-
-		It("fails when new consensus metadata has invalid options", func() {
-			// NOTE: we are not checking all failures here since tests for CheckConfigMetadata does that
-			newMetadata.Options.TickInterval = ""
-			newBytes, _ := proto.Marshal(newMetadata)
-			Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).NotTo(Succeed())
-		})
-
-		Context("new channel creation", func() {
-
-			BeforeEach(func() {
-				newChannel = true
-			})
-
-			It("fails when the new consenters are an empty set", func() {
-				newMetadata.Consenters = []*etcdraftproto.Consenter{}
-				newBytes, _ := proto.Marshal(newMetadata)
-				Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).NotTo(Succeed())
-			})
-
-			It("succeeds when the new consenters are the same as the existing consenters", func() {
-				newBytes, _ := proto.Marshal(newMetadata)
-				Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).To(Succeed())
-			})
-
-			It("succeeds when the new consenters are a subset of the existing consenters", func() {
-				newMetadata.Consenters = newMetadata.Consenters[:2]
-				newBytes, _ := proto.Marshal(newMetadata)
-				Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).To(Succeed())
-			})
-
-			It("fails when the new consenters are not a subset of the existing consenters", func() {
-				newMetadata.Consenters[2].ClientTlsCert = clientTLSCert(tlsCA)
-				newBytes, _ := proto.Marshal(newMetadata)
-				Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).NotTo(Succeed())
-			})
-
-		})
-
-		Context("config update on a channel", func() {
-
-			BeforeEach(func() {
-				newChannel = false
-			})
-
-			It("fails when the new consenters are an empty set", func() {
-				// NOTE: This also takes care of the case when we remove node from a singleton consenter set
-				newMetadata.Consenters = []*etcdraftproto.Consenter{}
-				newBytes, _ := proto.Marshal(newMetadata)
-				Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).NotTo(Succeed())
-			})
-
-			It("succeeds when the new consenters are the same as the existing consenters", func() {
-				newBytes, _ := proto.Marshal(newMetadata)
-				Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).To(Succeed())
-			})
-
-			It("succeeds on addition of a single consenter", func() {
-				newMetadata.Consenters = append(newMetadata.Consenters, &etcdraftproto.Consenter{
-					Host:          "host4",
-					Port:          10004,
-					ClientTlsCert: clientTLSCert(tlsCA),
-					ServerTlsCert: serverTLSCert(tlsCA),
-				})
-				newBytes, _ := proto.Marshal(newMetadata)
-				Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).To(Succeed())
-			})
-
-			It("fails on addition of more than one consenter", func() {
-				newMetadata.Consenters = append(newMetadata.Consenters,
-					&etcdraftproto.Consenter{
-						Host:          "host4",
-						Port:          10004,
-						ClientTlsCert: clientTLSCert(tlsCA),
-						ServerTlsCert: serverTLSCert(tlsCA),
-					},
-					&etcdraftproto.Consenter{
-						Host:          "host5",
-						Port:          10005,
-						ClientTlsCert: clientTLSCert(tlsCA),
-						ServerTlsCert: serverTLSCert(tlsCA),
-					},
-				)
-				newBytes, _ := proto.Marshal(newMetadata)
-				Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).NotTo(Succeed())
-			})
-
-			It("succeeds on removal of a single consenter", func() {
-				newMetadata.Consenters = newMetadata.Consenters[:2]
-				newBytes, _ := proto.Marshal(newMetadata)
-				Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).To(Succeed())
-			})
-
-			It("fails on removal of more than one consenter", func() {
-				newMetadata.Consenters = newMetadata.Consenters[:1]
-				newBytes, _ := proto.Marshal(newMetadata)
-				Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).NotTo(Succeed())
-			})
-
-			It("succeeds on rotating certs in case of both addition and removal of a node each to reuse the raft NodeId", func() {
-				newMetadata.Consenters = append(newMetadata.Consenters[:2], &etcdraftproto.Consenter{
-					Host:          "host4",
-					Port:          10004,
-					ClientTlsCert: clientTLSCert(tlsCA),
-					ServerTlsCert: serverTLSCert(tlsCA),
-				})
-				newBytes, _ := proto.Marshal(newMetadata)
-				Expect(consenter.ValidateConsensusMetadata(oldBytes, newBytes, newChannel)).To(Succeed())
-			})
-
-		})
 	})
 })
 
@@ -463,6 +304,10 @@ func newConsenter(chainGetter *mocks.ChainGetter) *consenter {
 	icr := &mocks.InactiveChainRegistry{}
 	icr.On("TrackChain", "foo", mock.Anything, mock.Anything)
 	certAsPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("cert bytes")})
+
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	Expect(err).NotTo(HaveOccurred())
+
 	c := &etcdraft.Consenter{
 		InactiveChainRegistry: icr,
 		Communication:         communicator,
@@ -480,6 +325,7 @@ func newConsenter(chainGetter *mocks.ChainGetter) *consenter {
 				},
 			},
 		},
+		BCCSP: cryptoProvider,
 	}
 	return &consenter{
 		Consenter: c,

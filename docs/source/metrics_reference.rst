@@ -91,6 +91,8 @@ The following metrics are currently exported for consumption by Prometheus.
 |                                                     |           |                                                            +------------------+-------------------------------------------------------------+
 |                                                     |           |                                                            | channel          |                                                             |
 +-----------------------------------------------------+-----------+------------------------------------------------------------+------------------+-------------------------------------------------------------+
+| consensus_etcdraft_active_nodes                     | gauge     | Number of active nodes in this channel.                    | channel          |                                                             |
++-----------------------------------------------------+-----------+------------------------------------------------------------+------------------+-------------------------------------------------------------+
 | consensus_etcdraft_cluster_size                     | gauge     | Number of nodes in this channel.                           | channel          |                                                             |
 +-----------------------------------------------------+-----------+------------------------------------------------------------+------------------+-------------------------------------------------------------+
 | consensus_etcdraft_committed_block_number           | gauge     | The block number of the latest block committed.            | channel          |                                                             |
@@ -147,16 +149,22 @@ The following metrics are currently exported for consumption by Prometheus.
 | deliver_blocks_sent                                 | counter   | The number of blocks sent by the deliver service.          | channel          |                                                             |
 |                                                     |           |                                                            +------------------+-------------------------------------------------------------+
 |                                                     |           |                                                            | filtered         |                                                             |
+|                                                     |           |                                                            +------------------+-------------------------------------------------------------+
+|                                                     |           |                                                            | data_type        |                                                             |
 +-----------------------------------------------------+-----------+------------------------------------------------------------+------------------+-------------------------------------------------------------+
 | deliver_requests_completed                          | counter   | The number of deliver requests that have been completed.   | channel          |                                                             |
 |                                                     |           |                                                            +------------------+-------------------------------------------------------------+
 |                                                     |           |                                                            | filtered         |                                                             |
+|                                                     |           |                                                            +------------------+-------------------------------------------------------------+
+|                                                     |           |                                                            | data_type        |                                                             |
 |                                                     |           |                                                            +------------------+-------------------------------------------------------------+
 |                                                     |           |                                                            | success          |                                                             |
 +-----------------------------------------------------+-----------+------------------------------------------------------------+------------------+-------------------------------------------------------------+
 | deliver_requests_received                           | counter   | The number of deliver requests that have been received.    | channel          |                                                             |
 |                                                     |           |                                                            +------------------+-------------------------------------------------------------+
 |                                                     |           |                                                            | filtered         |                                                             |
+|                                                     |           |                                                            +------------------+-------------------------------------------------------------+
+|                                                     |           |                                                            | data_type        |                                                             |
 +-----------------------------------------------------+-----------+------------------------------------------------------------+------------------+-------------------------------------------------------------+
 | deliver_streams_closed                              | counter   | The number of GRPC streams that have been closed for the   |                  |                                                             |
 |                                                     |           | deliver service.                                           |                  |                                                             |
@@ -367,6 +375,8 @@ associated with the metric.
 +-----------------------------------------------------------------------------------------+-----------+------------------------------------------------------------+
 | cluster.comm.msg_send_time.%{host}.%{channel}                                           | histogram | The time it takes to send a message in seconds.            |
 +-----------------------------------------------------------------------------------------+-----------+------------------------------------------------------------+
+| consensus.etcdraft.active_nodes.%{channel}                                              | gauge     | Number of active nodes in this channel.                    |
++-----------------------------------------------------------------------------------------+-----------+------------------------------------------------------------+
 | consensus.etcdraft.cluster_size.%{channel}                                              | gauge     | Number of nodes in this channel.                           |
 +-----------------------------------------------------------------------------------------+-----------+------------------------------------------------------------+
 | consensus.etcdraft.committed_block_number.%{channel}                                    | gauge     | The block number of the latest block committed.            |
@@ -417,11 +427,11 @@ associated with the metric.
 | couchdb.processing_time.%{database}.%{function_name}.%{result}                          | histogram | Time taken in seconds for the function to complete request |
 |                                                                                         |           | to CouchDB                                                 |
 +-----------------------------------------------------------------------------------------+-----------+------------------------------------------------------------+
-| deliver.blocks_sent.%{channel}.%{filtered}                                              | counter   | The number of blocks sent by the deliver service.          |
+| deliver.blocks_sent.%{channel}.%{filtered}.%{data_type}                                 | counter   | The number of blocks sent by the deliver service.          |
 +-----------------------------------------------------------------------------------------+-----------+------------------------------------------------------------+
-| deliver.requests_completed.%{channel}.%{filtered}.%{success}                            | counter   | The number of deliver requests that have been completed.   |
+| deliver.requests_completed.%{channel}.%{filtered}.%{data_type}.%{success}               | counter   | The number of deliver requests that have been completed.   |
 +-----------------------------------------------------------------------------------------+-----------+------------------------------------------------------------+
-| deliver.requests_received.%{channel}.%{filtered}                                        | counter   | The number of deliver requests that have been received.    |
+| deliver.requests_received.%{channel}.%{filtered}.%{data_type}                           | counter   | The number of deliver requests that have been received.    |
 +-----------------------------------------------------------------------------------------+-----------+------------------------------------------------------------+
 | deliver.streams_closed                                                                  | counter   | The number of GRPC streams that have been closed for the   |
 |                                                                                         |           | deliver service.                                           |

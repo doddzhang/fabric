@@ -12,10 +12,9 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/crypto"
-	"github.com/hyperledger/fabric/internal/pkg/identity"
-	cb "github.com/hyperledger/fabric/protos/common"
-	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protoutil/fakes"
 	"github.com/stretchr/testify/assert"
 )
@@ -23,7 +22,7 @@ import (
 //go:generate counterfeiter -o fakes/signer_serializer.go --fake-name SignerSerializer . signerSerializer
 
 type signerSerializer interface {
-	identity.SignerSerializer
+	Signer
 }
 
 func TestNonceRandomness(t *testing.T) {
@@ -74,9 +73,8 @@ func TestUnmarshalPayload(t *testing.T) {
 func TestUnmarshalSignatureHeader(t *testing.T) {
 	t.Run("invalid header", func(t *testing.T) {
 		sighdrBytes := []byte("invalid signature header")
-		sighdr, err := UnmarshalSignatureHeader(sighdrBytes)
+		_, err := UnmarshalSignatureHeader(sighdrBytes)
 		assert.Error(t, err, "Expected unmarshaling error")
-		assert.Nil(t, sighdr)
 	})
 
 	t.Run("valid empty header", func(t *testing.T) {
@@ -260,7 +258,7 @@ func TestExtractEnvelopeOrPanic(t *testing.T) {
 }
 
 func TestExtractPayload(t *testing.T) {
-	if payload, err := ExtractPayload(testEnvelope()); err != nil {
+	if payload, err := UnmarshalPayload(testEnvelope().Payload); err != nil {
 		t.Fatalf("Expected payload extraction to succeed: %s", err)
 	} else if !proto.Equal(payload, testPayload()) {
 		t.Fatal("Expected extracted payload to match test payload")
@@ -274,7 +272,7 @@ func TestExtractPayloadOrPanic(t *testing.T) {
 		}
 	}()
 
-	if !proto.Equal(ExtractPayloadOrPanic(testEnvelope()), testPayload()) {
+	if !proto.Equal(UnmarshalPayloadOrPanic(testEnvelope().Payload), testPayload()) {
 		t.Fatal("Expected extracted payload to match test payload")
 	}
 }

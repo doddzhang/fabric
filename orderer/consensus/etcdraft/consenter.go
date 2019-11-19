@@ -14,6 +14,10 @@ import (
 
 	"code.cloudfoundry.org/clock"
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/orderer"
+	"github.com/hyperledger/fabric-protos-go/orderer/etcdraft"
+	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/core/comm"
@@ -22,9 +26,6 @@ import (
 	"github.com/hyperledger/fabric/orderer/common/multichannel"
 	"github.com/hyperledger/fabric/orderer/consensus"
 	"github.com/hyperledger/fabric/orderer/consensus/inactive"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/orderer"
-	"github.com/hyperledger/fabric/protos/orderer/etcdraft"
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
 	"go.etcd.io/etcd/raft"
@@ -59,7 +60,7 @@ type Config struct {
 	EvictionSuspicion string // Duration threshold that the node samples in order to suspect its eviction from the channel.
 }
 
-// Consenter implements etddraft consenter
+// Consenter implements etcdraft consenter
 type Consenter struct {
 	CreateChain           func(chainName string)
 	InactiveChainRegistry InactiveChainRegistry
@@ -72,6 +73,7 @@ type Consenter struct {
 	OrdererConfig  localconfig.TopLevel
 	Cert           []byte
 	Metrics        *Metrics
+	BCCSP          bccsp.BCCSP
 }
 
 // TargetChannel extracts the channel from the given proto.Message.
@@ -159,10 +161,10 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *co
 
 	id, err := c.detectSelfID(consenters)
 	if err != nil {
-		c.InactiveChainRegistry.TrackChain(support.ChainID(), support.Block(0), func() {
-			c.CreateChain(support.ChainID())
+		c.InactiveChainRegistry.TrackChain(support.ChannelID(), support.Block(0), func() {
+			c.CreateChain(support.ChannelID())
 		})
-		return &inactive.Chain{Err: errors.Errorf("channel %s is not serviced by me", support.ChainID())}, nil
+		return &inactive.Chain{Err: errors.Errorf("channel %s is not serviced by me", support.ChannelID())}, nil
 	}
 
 	var evictionSuspicion time.Duration
@@ -199,8 +201,8 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *co
 
 		MigrationInit: isMigration,
 
-		WALDir:            path.Join(c.EtcdRaftConfig.WALDir, support.ChainID()),
-		SnapDir:           path.Join(c.EtcdRaftConfig.SnapDir, support.ChainID()),
+		WALDir:            path.Join(c.EtcdRaftConfig.WALDir, support.ChannelID()),
+		SnapDir:           path.Join(c.EtcdRaftConfig.SnapDir, support.ChannelID()),
 		EvictionSuspicion: evictionSuspicion,
 		Cert:              c.Cert,
 		Metrics:           c.Metrics,
@@ -209,7 +211,7 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *co
 	rpc := &cluster.RPC{
 		Timeout:       c.OrdererConfig.General.Cluster.RPCTimeout,
 		Logger:        c.Logger,
-		Channel:       support.ChainID(),
+		Channel:       support.ChannelID(),
 		Comm:          c.Communication,
 		StreamsByType: cluster.NewStreamsByType(),
 	}
@@ -218,55 +220,15 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *co
 		opts,
 		c.Communication,
 		rpc,
-		func() (BlockPuller, error) { return newBlockPuller(support, c.Dialer, c.OrdererConfig.General.Cluster) },
+		c.BCCSP,
+		func() (BlockPuller, error) {
+			return NewBlockPuller(support, c.Dialer, c.OrdererConfig.General.Cluster, c.BCCSP)
+		},
+		func() {
+			c.InactiveChainRegistry.TrackChain(support.ChannelID(), nil, func() { c.CreateChain(support.ChannelID()) })
+		},
 		nil,
 	)
-}
-
-// ValidateConsensusMetadata determines the validity of a
-// ConsensusMetadata update during config updates on the channel.
-// Since the ConsensusMetadata is specific to the consensus implementation (independent of the particular
-// chain) this validation also needs to be implemented by the specific consensus implementation.
-func (c *Consenter) ValidateConsensusMetadata(oldMetadataBytes, newMetadataBytes []byte, newChannel bool) error {
-	// metadata was not updated
-	if newMetadataBytes == nil {
-		return nil
-	}
-	if oldMetadataBytes == nil {
-		c.Logger.Panic("Programming Error: ValidateConsensusMetadata called with nil old metadata")
-	}
-
-	oldMetadata := &etcdraft.ConfigMetadata{}
-	if err := proto.Unmarshal(oldMetadataBytes, oldMetadata); err != nil {
-		c.Logger.Panicf("Programming Error: Failed to unmarshal old etcdraft consensus metadata: %v", err)
-	}
-	newMetadata := &etcdraft.ConfigMetadata{}
-	if err := proto.Unmarshal(newMetadataBytes, newMetadata); err != nil {
-		return errors.Wrap(err, "failed to unmarshal new etcdraft metadata configuration")
-	}
-
-	err := CheckConfigMetadata(newMetadata)
-	if err != nil {
-		return errors.Wrap(err, "invalid new config metdadata")
-	}
-
-	if newChannel {
-		// check if the consenters are a subset of the existing consenters (system channel consenters)
-		set := ConsentersToMap(oldMetadata.Consenters)
-		for _, c := range newMetadata.Consenters {
-			if _, exits := set[string(c.ClientTlsCert)]; !exits {
-				return errors.New("new channel has consenter that is not part of system consenter set")
-			}
-		}
-		return nil
-	}
-
-	// create the dummy parameters for ComputeMembershipChanges
-	dummyOldBlockMetadata, _ := ReadBlockMetadata(nil, oldMetadata)
-	dummyOldConsentersMap := CreateConsentersMap(dummyOldBlockMetadata, oldMetadata)
-	_, err = ComputeMembershipChanges(dummyOldBlockMetadata, dummyOldConsentersMap, newMetadata.Consenters)
-
-	return err
 }
 
 // ReadBlockMetadata attempts to read raft metadata from block metadata, if available.
@@ -302,6 +264,7 @@ func New(
 	r *multichannel.Registrar,
 	icr InactiveChainRegistry,
 	metricsProvider metrics.Provider,
+	bccsp bccsp.BCCSP,
 ) *Consenter {
 	logger := flogging.MustGetLogger("orderer.consensus.etcdraft")
 
@@ -321,6 +284,7 @@ func New(
 		Dialer:                clusterDialer,
 		Metrics:               NewMetrics(metricsProvider),
 		InactiveChainRegistry: icr,
+		BCCSP:                 bccsp,
 	}
 	consenter.Dispatcher = &Dispatcher{
 		Logger:        logger,

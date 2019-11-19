@@ -13,10 +13,14 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset"
+	"github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/flogging/floggingtest"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
-	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
@@ -28,10 +32,6 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 	mocklgr "github.com/hyperledger/fabric/core/ledger/mock"
 	lutils "github.com/hyperledger/fabric/core/ledger/util"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
-	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
-	"github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
 )
@@ -210,7 +210,7 @@ func TestPreprocessProtoBlock(t *testing.T) {
 	assert.NoError(t, err)
 	expected := fmt.Sprintf(
 		"Channel [%s]: Block [%d] Transaction index [%d] TxId [%s] marked as invalid by committer. Reason code [%s]",
-		util.GetTestChainID(), blockNum, 0, txid, peer.TxValidationCode_BAD_HEADER_EXTENSION,
+		"testchannelid", blockNum, 0, txid, peer.TxValidationCode_BAD_HEADER_EXTENSION,
 	)
 	assert.NotEmpty(t, recorder.MessagesContaining(expected))
 }
@@ -306,7 +306,10 @@ func TestTxStatsInfoWithConfigTx(t *testing.T) {
 	testDBEnv.Init(t)
 	defer testDBEnv.Cleanup()
 	testDB := testDBEnv.GetDBHandle("emptydb")
-	v := NewStatebasedValidator(nil, testDB, nil)
+
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	v := NewStatebasedValidator(nil, testDB, nil, cryptoProvider)
 
 	gb := testutil.ConstructTestBlocks(t, 1)[0]
 	_, txStatsInfo, err := v.ValidateAndPrepareBatch(&ledger.BlockAndPvtData{Block: gb}, true)
@@ -335,7 +338,9 @@ func TestContainsPostOrderWrites(t *testing.T) {
 		common.HeaderType_CONFIG: fakeTxProcessor,
 	}
 
-	v := NewStatebasedValidator(mockTxmgr, testDB, customTxProcessors)
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	v := NewStatebasedValidator(mockTxmgr, testDB, customTxProcessors, cryptoProvider)
 	blocks := testutil.ConstructTestBlocks(t, 2)
 
 	// block with config tx that produces post order writes
@@ -373,7 +378,10 @@ func TestTxStatsInfo(t *testing.T) {
 	testDBEnv.Init(t)
 	defer testDBEnv.Cleanup()
 	testDB := testDBEnv.GetDBHandle("emptydb")
-	v := NewStatebasedValidator(nil, testDB, nil)
+
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+	v := NewStatebasedValidator(nil, testDB, nil, cryptoProvider)
 
 	// create a block with 4 endorser transactions
 	tx1SimulationResults, _ := testutilGenerateTxSimulationResultsAsBytes(t,

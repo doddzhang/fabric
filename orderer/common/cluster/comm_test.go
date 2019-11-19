@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/metrics"
@@ -27,8 +29,6 @@ import (
 	comm_utils "github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	"github.com/hyperledger/fabric/orderer/common/cluster/mocks"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/orderer"
 	"github.com/onsi/gomega"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
@@ -793,7 +793,7 @@ func TestNoTLSCertificate(t *testing.T) {
 	var conn *grpc.ClientConn
 	gt := gomega.NewGomegaWithT(t)
 	gt.Eventually(func() (bool, error) {
-		conn, err = cl.NewConnection(node1.srv.Address(), "")
+		conn, err = cl.NewConnection(node1.srv.Address())
 		return true, err
 	}, time.Minute).Should(gomega.BeTrue())
 

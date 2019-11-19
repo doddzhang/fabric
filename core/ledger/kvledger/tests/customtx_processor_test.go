@@ -9,22 +9,28 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/hyperledger/fabric-protos-go/common"
+	protopeer "github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
 	"github.com/hyperledger/fabric/core/ledger/mock"
-	"github.com/hyperledger/fabric/protos/common"
-	protopeer "github.com/hyperledger/fabric/protos/peer"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestReadWriteCustomTxProcessor(t *testing.T) {
 	fakeTxProcessor := &mock.CustomTxProcessor{}
+
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+
 	env := newEnvWithInitializer(
 		t,
 		&ledgermgmt.Initializer{
 			CustomTxProcessors: map[common.HeaderType]ledger.CustomTxProcessor{
 				100: fakeTxProcessor,
 			},
+			Hasher: cryptoProvider,
 		},
 	)
 	defer env.cleanup()
@@ -36,7 +42,7 @@ func TestReadWriteCustomTxProcessor(t *testing.T) {
 		s.setState("ns", "key2", "value2")
 		s.setState("ns", "key3", "value3")
 	})
-	h.cutBlockAndCommitWithPvtdata() // commit block-1 to populate initial state
+	h.cutBlockAndCommitLegacy() // commit block-1 to populate initial state
 
 	valueCounter := 0
 	fakeTxProcessor.GenerateSimulationResultsStub =
@@ -52,7 +58,7 @@ func TestReadWriteCustomTxProcessor(t *testing.T) {
 	// block-2 with two post order transactions
 	h.addPostOrderTx("tx1", 100)
 	h.addPostOrderTx("tx2", 100)
-	h.cutBlockAndCommitWithPvtdata()
+	h.cutBlockAndCommitLegacy()
 
 	// Tx1 should be valid and tx2 should be marked as invalid because, tx1 has already modified key1
 	// in the same block
@@ -65,6 +71,10 @@ func TestRangeReadAndWriteCustomTxProcessor(t *testing.T) {
 	fakeTxProcessor1 := &mock.CustomTxProcessor{}
 	fakeTxProcessor2 := &mock.CustomTxProcessor{}
 	fakeTxProcessor3 := &mock.CustomTxProcessor{}
+
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	assert.NoError(t, err)
+
 	env := newEnvWithInitializer(
 		t,
 		&ledgermgmt.Initializer{
@@ -73,6 +83,7 @@ func TestRangeReadAndWriteCustomTxProcessor(t *testing.T) {
 				102: fakeTxProcessor2,
 				103: fakeTxProcessor3,
 			},
+			Hasher: cryptoProvider,
 		},
 	)
 	defer env.cleanup()
@@ -84,7 +95,7 @@ func TestRangeReadAndWriteCustomTxProcessor(t *testing.T) {
 		s.setState("ns", "key2", "value2")
 		s.setState("ns", "key3", "value3")
 	})
-	h.cutBlockAndCommitWithPvtdata() // commit block-1 to populate initial state
+	h.cutBlockAndCommitLegacy() // commit block-1 to populate initial state
 
 	fakeTxProcessor1.GenerateSimulationResultsStub =
 		// tx processor for txtype 101 sets key1
@@ -126,7 +137,7 @@ func TestRangeReadAndWriteCustomTxProcessor(t *testing.T) {
 	h.addPostOrderTx("tx1", 101)
 	h.addPostOrderTx("tx2", 102)
 	h.addPostOrderTx("tx3", 103)
-	h.cutBlockAndCommitWithPvtdata()
+	h.cutBlockAndCommitLegacy()
 
 	// Tx1 should be valid and tx2 should be marked as invalid because, tx1 has already modified key1
 	// in the same block (and tx2 does a range iteration that includes key1)

@@ -13,13 +13,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hyperledger/fabric-protos-go/common"
+	protosgossip "github.com/hyperledger/fabric-protos-go/gossip"
 	commonutil "github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/committer"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/gossip/metrics"
 	privdatacommon "github.com/hyperledger/fabric/gossip/privdata/common"
-	"github.com/hyperledger/fabric/protos/common"
-	protosgossip "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/pkg/errors"
 )
 
@@ -259,14 +259,14 @@ func (r *Reconciler) getMostRecentCollectionConfig(chaincodeName string, collect
 	return staticCollectionConfig.StaticCollectionConfig, nil
 }
 
-func (r *Reconciler) preparePvtDataToCommit(elements []*protosgossip.PvtDataElement) []*ledger.BlockPvtData {
+func (r *Reconciler) preparePvtDataToCommit(elements []*protosgossip.PvtDataElement) []*ledger.ReconciledPvtdata {
 	rwSetByBlockByKeys := r.groupRwsetByBlock(elements)
 
 	// populate the private RWSets passed to the ledger
-	var pvtDataToCommit []*ledger.BlockPvtData
+	var pvtDataToCommit []*ledger.ReconciledPvtdata
 
 	for blockNum, rwSetKeys := range rwSetByBlockByKeys {
-		blockPvtData := &ledger.BlockPvtData{
+		blockPvtData := &ledger.ReconciledPvtdata{
 			BlockNum:  blockNum,
 			WriteSets: make(map[uint64]*ledger.TxPvtData),
 		}

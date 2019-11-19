@@ -11,13 +11,14 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric-lib-go/healthz"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset"
+	"github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric/bccsp"
 	commonledger "github.com/hyperledger/fabric/common/ledger"
 	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/core/ledger/util/couchdb"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
-	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
-	"github.com/hyperledger/fabric/protos/peer"
 )
 
 // Initializer encapsulates dependencies for PeerLedgerProvider
@@ -30,6 +31,7 @@ type Initializer struct {
 	HealthCheckRegistry             HealthCheckRegistry
 	Config                          *Config
 	CustomTxProcessors              map[common.HeaderType]CustomTxProcessor
+	Hasher                          Hasher
 }
 
 // Config is a structure used to configure a ledger provider.
@@ -120,17 +122,24 @@ type PeerLedger interface {
 	// The pvt data is filtered by the list of 'ns/collections' supplied in the filter
 	// A nil filter does not filter any results and causes retrieving all the pvt data for the given blockNum
 	GetPvtDataByNum(blockNum uint64, filter PvtNsCollFilter) ([]*TxPvtData, error)
-	// CommitWithPvtData commits the block and the corresponding pvt data in an atomic operation
-	CommitWithPvtData(blockAndPvtdata *BlockAndPvtData) error
+	// CommitLegacy commits the block and the corresponding pvt data in an atomic operation following the v14 validation/commit path
+	// TODO: add a new Commit() path that replaces CommitLegacy() for the validation refactor described in FAB-12221
+	CommitLegacy(blockAndPvtdata *BlockAndPvtData, commitOpts *CommitOptions) error
 	// GetConfigHistoryRetriever returns the ConfigHistoryRetriever
 	GetConfigHistoryRetriever() (ConfigHistoryRetriever, error)
 	// CommitPvtDataOfOldBlocks commits the private data corresponding to already committed block
 	// If hashes for some of the private data supplied in this function does not match
 	// the corresponding hash present in the block, the unmatched private data is not
 	// committed and instead the mismatch inforation is returned back
-	CommitPvtDataOfOldBlocks(blockPvtData []*BlockPvtData) ([]*PvtdataHashMismatch, error)
+	CommitPvtDataOfOldBlocks(reconciledPvtdata []*ReconciledPvtdata) ([]*PvtdataHashMismatch, error)
 	// GetMissingPvtDataTracker return the MissingPvtDataTracker
 	GetMissingPvtDataTracker() (MissingPvtDataTracker, error)
+	// DoesPvtDataInfoExist returns true when
+	// (1) the ledger has pvtdata associated with the given block number (or)
+	// (2) a few or all pvtdata associated with the given block number is missing but the
+	//     missing info is recorded in the ledger (or)
+	// (3) the block is committed and does not contain any pvtData.
+	DoesPvtDataInfoExist(blockNum uint64) (bool, error)
 }
 
 // SimpleQueryExecutor encapsulates basic functions
@@ -141,7 +150,7 @@ type SimpleQueryExecutor interface {
 	// startKey is included in the results and endKey is excluded. An empty startKey refers to the first available key
 	// and an empty endKey refers to the last available key. For scanning all the keys, both the startKey and the endKey
 	// can be supplied as empty strings. However, a full scan should be used judiciously for performance reasons.
-	// The returned ResultsIterator contains results of type *KV which is defined in protos/ledger/queryresult.
+	// The returned ResultsIterator contains results of type *KV which is defined in fabric-protos/ledger/queryresult.
 	GetStateRangeScanIterator(namespace string, startKey string, endKey string) (commonledger.ResultsIterator, error)
 	// GetPrivateDataHash gets the hash of the value of a private data item identified by a tuple <namespace, collection, key>
 	// Function `GetPrivateData` is only meaningful when it is invoked on a peer that is authorized to have the private data
@@ -166,18 +175,18 @@ type QueryExecutor interface {
 	// and an empty endKey refers to the last available key. For scanning all the keys, both the startKey and the endKey
 	// can be supplied as empty strings. However, a full scan should be used judiciously for performance reasons.
 	// metadata is a map of additional query parameters
-	// The returned ResultsIterator contains results of type *KV which is defined in protos/ledger/queryresult.
+	// The returned ResultsIterator contains results of type *KV which is defined in fabric-protos/ledger/queryresult.
 	GetStateRangeScanIteratorWithMetadata(namespace string, startKey, endKey string, metadata map[string]interface{}) (QueryResultsIterator, error)
 	// ExecuteQuery executes the given query and returns an iterator that contains results of type specific to the underlying data store.
 	// Only used for state databases that support query
 	// For a chaincode, the namespace corresponds to the chaincodeId
-	// The returned ResultsIterator contains results of type *KV which is defined in protos/ledger/queryresult.
+	// The returned ResultsIterator contains results of type *KV which is defined in fabric-protos/ledger/queryresult.
 	ExecuteQuery(namespace, query string) (commonledger.ResultsIterator, error)
 	// ExecuteQueryWithMetadata executes the given query and returns an iterator that contains results of type specific to the underlying data store.
 	// metadata is a map of additional query parameters
 	// Only used for state databases that support query
 	// For a chaincode, the namespace corresponds to the chaincodeId
-	// The returned ResultsIterator contains results of type *KV which is defined in protos/ledger/queryresult.
+	// The returned ResultsIterator contains results of type *KV which is defined in fabric-protos/ledger/queryresult.
 	ExecuteQueryWithMetadata(namespace, query string, metadata map[string]interface{}) (QueryResultsIterator, error)
 	// GetPrivateData gets the value of a private data item identified by a tuple <namespace, collection, key>
 	GetPrivateData(namespace, collection, key string) ([]byte, error)
@@ -191,12 +200,12 @@ type QueryExecutor interface {
 	// startKey is included in the results and endKey is excluded. An empty startKey refers to the first available key
 	// and an empty endKey refers to the last available key. For scanning all the keys, both the startKey and the endKey
 	// can be supplied as empty strings. However, a full scan shuold be used judiciously for performance reasons.
-	// The returned ResultsIterator contains results of type *KV which is defined in protos/ledger/queryresult.
+	// The returned ResultsIterator contains results of type *KV which is defined in fabric-protos/ledger/queryresult.
 	GetPrivateDataRangeScanIterator(namespace, collection, startKey, endKey string) (commonledger.ResultsIterator, error)
 	// ExecuteQuery executes the given query and returns an iterator that contains results of type specific to the underlying data store.
 	// Only used for state databases that support query
 	// For a chaincode, the namespace corresponds to the chaincodeId
-	// The returned ResultsIterator contains results of type *KV which is defined in protos/ledger/queryresult.
+	// The returned ResultsIterator contains results of type *KV which is defined in fabric-protos/ledger/queryresult.
 	ExecuteQueryOnPrivateData(namespace, collection, query string) (commonledger.ResultsIterator, error)
 	// Done releases resources occupied by the QueryExecutor
 	Done()
@@ -205,7 +214,7 @@ type QueryExecutor interface {
 // HistoryQueryExecutor executes the history queries
 type HistoryQueryExecutor interface {
 	// GetHistoryForKey retrieves the history of values for a key.
-	// The returned ResultsIterator contains results of type *KeyModification which is defined in protos/ledger/queryresult.
+	// The returned ResultsIterator contains results of type *KeyModification which is defined in fabric-protos/ledger/queryresult.
 	GetHistoryForKey(namespace string, key string) (commonledger.ResultsIterator, error)
 }
 
@@ -286,8 +295,8 @@ type BlockAndPvtData struct {
 	MissingPvtData TxMissingPvtDataMap
 }
 
-// BlockPvtData contains the private data for a block
-type BlockPvtData struct {
+// ReconciledPvtdata contains the private data for a block for reconciliation
+type ReconciledPvtdata struct {
 	BlockNum  uint64
 	WriteSets TxPvtDataMap
 }
@@ -295,6 +304,41 @@ type BlockPvtData struct {
 // Add adds a given missing private data in the MissingPrivateDataList
 func (txMissingPvtData TxMissingPvtDataMap) Add(txNum uint64, ns, coll string, isEligible bool) {
 	txMissingPvtData[txNum] = append(txMissingPvtData[txNum], &MissingPvtData{ns, coll, isEligible})
+}
+
+// RetrievedPvtdata is a dependency that is implemented by coordinator/gossip for ledger
+// to be able to purge the transactions from the block after retrieving private data
+type RetrievedPvtdata interface {
+	GetBlockPvtdata() *BlockPvtdata
+	Purge()
+}
+
+// TxPvtdataInfo captures information about the requested private data to be retrieved
+type TxPvtdataInfo struct {
+	TxID                  string
+	Invalid               bool
+	SeqInBlock            uint64
+	CollectionPvtdataInfo []*CollectionPvtdataInfo
+}
+
+// CollectionPvtdataInfo contains information about the private data for a given collection
+type CollectionPvtdataInfo struct {
+	Namespace, Collection string
+	ExpectedHash          []byte
+	CollectionConfig      *common.StaticCollectionConfig
+	Endorsers             []*peer.Endorsement
+}
+
+// BlockPvtdata contains the retrieved private data as well as missing and ineligible
+// private data for use at commit time
+type BlockPvtdata struct {
+	PvtData        TxPvtDataMap
+	MissingPvtData TxMissingPvtDataMap
+}
+
+// CommitOptions encapsulates options associated with a block commit.
+type CommitOptions struct {
+	FetchPvtDataFromLedger bool
 }
 
 // PvtCollFilter represents the set of the collection names (as keys of the map with value 'true')
@@ -369,13 +413,13 @@ func (txSim *TxSimulationResults) ContainsPvtWrites() bool {
 }
 
 // StateListener allows a custom code for performing additional stuff upon state change
-// for a perticular namespace against which the listener is registered.
+// for a particular namespace against which the listener is registered.
 // This helps to perform custom tasks other than the state updates.
-// A ledger implemetation is expected to invoke Function `HandleStateUpdates` once per block and
+// A ledger implementation is expected to invoke Function `HandleStateUpdates` once per block and
 // the `stateUpdates` parameter passed to the function captures the state changes caused by the block
 // for the namespace. The actual data type of stateUpdates depends on the data model enabled.
 // For instance, for KV data model, the actual type would be proto message
-// `github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset.KVWrite`
+// `github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset.KVWrite`
 // Function `HandleStateUpdates` is expected to be invoked before block is committed and if this
 // function returns an error, the ledger implementation is expected to halt block commit operation
 // and result in a panic.
@@ -500,7 +544,7 @@ type PvtdataHashMismatch struct {
 }
 
 // DeployedChaincodeInfoProvider is a dependency that is used by ledger to build collection config history
-// LSCC module is expected to provide an implementation for this dependencys
+// LSCC module is expected to provide an implementation for this dependencies
 type DeployedChaincodeInfoProvider interface {
 	// Namespaces returns the slice of the namespaces that are used for maintaining chaincode lifecycle data
 	Namespaces() []string
@@ -512,6 +556,8 @@ type DeployedChaincodeInfoProvider interface {
 	CollectionInfo(channelName, chaincodeName, collectionName string, qe SimpleQueryExecutor) (*common.StaticCollectionConfig, error)
 	// ImplicitCollections returns a slice that contains one proto msg for each of the implicit collections
 	ImplicitCollections(channelName, chaincodeName string, qe SimpleQueryExecutor) ([]*common.StaticCollectionConfig, error)
+	// AllCollectionsConfigPkg returns a combined collection config pkg that contains both explicit and implicit collections
+	AllCollectionsConfigPkg(channelName, chaincodeName string, qe SimpleQueryExecutor) (*common.CollectionConfigPackage, error)
 }
 
 // DeployedChaincodeInfo encapsulates chaincode information from the deployed chaincodes
@@ -520,29 +566,7 @@ type DeployedChaincodeInfo struct {
 	Hash                        []byte
 	Version                     string
 	ExplicitCollectionConfigPkg *common.CollectionConfigPackage
-	ImplicitCollections         []*common.StaticCollectionConfig
 	IsLegacy                    bool
-}
-
-// GetAllCollectionsConfigPkg returns a combined collection config pkg that contains both explicit and implicit collections
-func (dci DeployedChaincodeInfo) AllCollectionsConfigPkg() *common.CollectionConfigPackage {
-	var combinedColls []*common.CollectionConfig
-	if dci.ExplicitCollectionConfigPkg != nil {
-		for _, explicitColl := range dci.ExplicitCollectionConfigPkg.Config {
-			combinedColls = append(combinedColls, explicitColl)
-		}
-	}
-	for _, implicitColl := range dci.ImplicitCollections {
-		c := &common.CollectionConfig{}
-		c.Payload = &common.CollectionConfig_StaticCollectionConfig{StaticCollectionConfig: implicitColl}
-		combinedColls = append(combinedColls, c)
-	}
-	if combinedColls == nil {
-		return nil
-	}
-	return &common.CollectionConfigPackage{
-		Config: combinedColls,
-	}
 }
 
 // ChaincodeLifecycleInfo captures the update info of a chaincode
@@ -626,6 +650,12 @@ type InvalidTxError struct {
 
 func (e *InvalidTxError) Error() string {
 	return e.Msg
+}
+
+// Hasher implements the hash function that should be used for all ledger components.
+// Currently works at a stepping stone to decrease surface area of bccsp
+type Hasher interface {
+	Hash(msg []byte, opts bccsp.HashOpts) (hash []byte, err error)
 }
 
 //go:generate counterfeiter -o mock/state_listener.go -fake-name StateListener . StateListener

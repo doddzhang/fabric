@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	proto "github.com/hyperledger/fabric-protos-go/gossip"
 	"github.com/hyperledger/fabric/bccsp/factory"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
 	corecomm "github.com/hyperledger/fabric/core/comm"
@@ -31,7 +33,6 @@ import (
 	"github.com/hyperledger/fabric/gossip/metrics/mocks"
 	"github.com/hyperledger/fabric/gossip/protoext"
 	"github.com/hyperledger/fabric/gossip/util"
-	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -171,7 +172,7 @@ func (*naiveCryptoService) GetPKIidOfCert(peerIdentity api.PeerIdentityType) com
 
 // VerifyBlock returns nil if the block is properly signed,
 // else returns error
-func (*naiveCryptoService) VerifyBlock(channelID common.ChannelID, seqNum uint64, signedBlock []byte) error {
+func (*naiveCryptoService) VerifyBlock(channelID common.ChannelID, seqNum uint64, signedBlock *cb.Block) error {
 	return nil
 }
 

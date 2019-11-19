@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package multichannel
 
 import (
+	cb "github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/ledger/blockledger"
 	"github.com/hyperledger/fabric/common/policies"
@@ -14,7 +16,6 @@ import (
 	"github.com/hyperledger/fabric/orderer/common/blockcutter"
 	"github.com/hyperledger/fabric/orderer/common/msgprocessor"
 	"github.com/hyperledger/fabric/orderer/consensus"
-	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
@@ -27,6 +28,7 @@ type ChainSupport struct {
 	consensus.Chain
 	cutter blockcutter.Receiver
 	identity.SignerSerializer
+	BCCSP bccsp.BCCSP
 
 	// NOTE: It makes sense to add this to the ChainSupport since the design of Registrar does not assume
 	// that there is a single consensus type at this orderer node and therefore the resolution of
@@ -40,6 +42,7 @@ func newChainSupport(
 	consenters map[string]consensus.Consenter,
 	signer identity.SignerSerializer,
 	blockcutterMetrics *blockcutter.Metrics,
+	bccsp bccsp.BCCSP,
 ) *ChainSupport {
 	// Read in the last block and metadata for the channel
 	lastBlock := blockledger.GetBlock(ledgerResources, ledgerResources.Height()-1)
@@ -47,7 +50,7 @@ func newChainSupport(
 	// Assuming a block created with cb.NewBlock(), this should not
 	// error even if the orderer metadata is an empty byte slice
 	if err != nil {
-		logger.Fatalf("[channel: %s] Error extracting orderer metadata: %s", ledgerResources.ConfigtxValidator().ChainID(), err)
+		logger.Fatalf("[channel: %s] Error extracting orderer metadata: %s", ledgerResources.ConfigtxValidator().ChannelID(), err)
 	}
 
 	// Construct limited support needed as a parameter for additional support
@@ -55,14 +58,15 @@ func newChainSupport(
 		ledgerResources:  ledgerResources,
 		SignerSerializer: signer,
 		cutter: blockcutter.NewReceiverImpl(
-			ledgerResources.ConfigtxValidator().ChainID(),
+			ledgerResources.ConfigtxValidator().ChannelID(),
 			ledgerResources,
 			blockcutterMetrics,
 		),
+		BCCSP: bccsp,
 	}
 
 	// Set up the msgprocessor
-	cs.Processor = msgprocessor.NewStandardChannel(cs, msgprocessor.CreateStandardChannelFilters(cs))
+	cs.Processor = msgprocessor.NewStandardChannel(cs, msgprocessor.CreateStandardChannelFilters(cs, registrar.config), bccsp)
 
 	// Set up the block writer
 	cs.BlockWriter = newBlockWriter(lastBlock, registrar, cs)
@@ -76,16 +80,15 @@ func newChainSupport(
 
 	cs.Chain, err = consenter.HandleChain(cs, metadata)
 	if err != nil {
-		logger.Panicf("[channel: %s] Error creating consenter: %s", cs.ChainID(), err)
+		logger.Panicf("[channel: %s] Error creating consenter: %s", cs.ChannelID(), err)
 	}
-	mv, ok := consenter.(consensus.MetadataValidator)
-	if ok {
-		cs.MetadataValidator = mv
-	} else {
+
+	cs.MetadataValidator, ok = cs.Chain.(consensus.MetadataValidator)
+	if !ok {
 		cs.MetadataValidator = consensus.NoOpMetadataValidator{}
 	}
 
-	logger.Debugf("[channel: %s] Done creating channel support resources", cs.ChainID())
+	logger.Debugf("[channel: %s] Done creating channel support resources", cs.ChannelID())
 
 	return cs
 }
@@ -130,7 +133,7 @@ func (cs *ChainSupport) ProposeConfigUpdate(configtx *cb.Envelope) (*cb.ConfigEn
 		return nil, err
 	}
 
-	bundle, err := cs.CreateBundle(cs.ChainID(), env.Config)
+	bundle, err := cs.CreateBundle(cs.ChannelID(), env.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -162,9 +165,9 @@ func (cs *ChainSupport) ProposeConfigUpdate(configtx *cb.Envelope) (*cb.ConfigEn
 	return env, nil
 }
 
-// ChainID passes through to the underlying configtx.Validator
-func (cs *ChainSupport) ChainID() string {
-	return cs.ConfigtxValidator().ChainID()
+// ChannelID passes through to the underlying configtx.Validator
+func (cs *ChainSupport) ChannelID() string {
+	return cs.ConfigtxValidator().ChannelID()
 }
 
 // ConfigProto passes through to the underlying configtx.Validator
@@ -193,7 +196,7 @@ func (cs *ChainSupport) VerifyBlockSignature(sd []*protoutil.SignedData, envelop
 	policyMgr := cs.PolicyManager()
 	// If the envelope passed isn't nil, we should use a different policy manager.
 	if envelope != nil {
-		bundle, err := channelconfig.NewBundle(cs.ChainID(), envelope.Config)
+		bundle, err := channelconfig.NewBundle(cs.ChannelID(), envelope.Config, cs.BCCSP)
 		if err != nil {
 			return err
 		}
@@ -203,7 +206,7 @@ func (cs *ChainSupport) VerifyBlockSignature(sd []*protoutil.SignedData, envelop
 	if !exists {
 		return errors.Errorf("policy %s wasn't found", policies.BlockValidation)
 	}
-	err := policy.Evaluate(sd)
+	err := policy.EvaluateSignedData(sd)
 	if err != nil {
 		return errors.Wrap(err, "block verification failed")
 	}

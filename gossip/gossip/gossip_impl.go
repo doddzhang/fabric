@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	pg "github.com/hyperledger/fabric-protos-go/gossip"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
@@ -29,7 +30,6 @@ import (
 	"github.com/hyperledger/fabric/gossip/metrics"
 	"github.com/hyperledger/fabric/gossip/protoext"
 	"github.com/hyperledger/fabric/gossip/util"
-	pg "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 )
@@ -125,6 +125,7 @@ func New(conf *Config, s *grpc.Server, sa api.SecurityAdvisor,
 		AliveExpirationTimeout:       conf.AliveExpirationTimeout,
 		AliveExpirationCheckInterval: conf.AliveExpirationCheckInterval,
 		ReconnectInterval:            conf.ReconnectInterval,
+		BootstrapPeers:               conf.BootstrapPeers,
 	}
 	g.disc = discovery.NewDiscoveryService(g.selfNetworkMember(), g.discAdapter, g.disSecAdap, g.disclosurePolicy,
 		discoveryConfig)
@@ -805,6 +806,7 @@ func (g *GossipImpl) Accept(acceptor common.MessageAcceptor, passThrough bool) (
 	inCh := g.AddChannel(acceptByType)
 	outCh := make(chan *pg.GossipMessage, acceptChanSize)
 	go func() {
+		defer close(outCh)
 		for {
 			select {
 			case <-g.toDieChan:
@@ -956,6 +958,10 @@ func (da *discoveryAdapter) Accept() <-chan protoext.ReceivedMessage {
 
 func (da *discoveryAdapter) PresumedDead() <-chan common.PKIidType {
 	return da.presumedDead
+}
+
+func (da *discoveryAdapter) IdentitySwitch() <-chan common.PKIidType {
+	return da.c.IdentitySwitch()
 }
 
 func (da *discoveryAdapter) CloseConn(peer *discovery.NetworkMember) {

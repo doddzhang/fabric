@@ -9,12 +9,12 @@ package privdata
 import (
 	"testing"
 
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/cauthdsl"
 	lm "github.com/hyperledger/fabric/common/mocks/ledger"
 	"github.com/hyperledger/fabric/core/common/privdata/mock"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
@@ -43,6 +43,7 @@ func TestNewSimpleCollectionStore(t *testing.T) {
 func TestCollectionStore(t *testing.T) {
 	mockQueryExecutorFactory := &mock.QueryExecutorFactory{}
 	mockCCInfoProvider := &mock.ChaincodeInfoProvider{}
+	mockCCInfoProvider.AllCollectionsConfigPkgReturns(nil, errors.New("Chaincode [non-existing-chaincode] does not exist"))
 	mockIDDeserializerFactory := &mock.IdentityDeserializerFactory{}
 	mockIDDeserializerFactory.GetIdentityDeserializerReturns(&mockDeserializer{})
 
@@ -53,17 +54,17 @@ func TestCollectionStore(t *testing.T) {
 	}
 
 	mockQueryExecutorFactory.NewQueryExecutorReturns(nil, errors.New("new-query-executor-failed"))
-	_, err := cs.RetrieveCollection(common.CollectionCriteria{})
+	_, err := cs.RetrieveCollection(CollectionCriteria{})
 	assert.Contains(t, err.Error(), "could not retrieve query executor for collection criteria")
 
 	mockQueryExecutorFactory.NewQueryExecutorReturns(&lm.MockQueryExecutor{}, nil)
-	_, err = cs.retrieveCollectionConfigPackage(common.CollectionCriteria{Namespace: "non-existing-chaincode"}, nil)
+	_, err = cs.retrieveCollectionConfigPackage(CollectionCriteria{Namespace: "non-existing-chaincode"}, nil)
 	assert.EqualError(t, err, "Chaincode [non-existing-chaincode] does not exist")
 
-	_, err = cs.RetrieveCollection(common.CollectionCriteria{})
+	_, err = cs.RetrieveCollection(CollectionCriteria{})
 	assert.Contains(t, err.Error(), "could not be found")
 
-	ccr := common.CollectionCriteria{Channel: "ch", Namespace: "cc", Collection: "mycollection"}
+	ccr := CollectionCriteria{Channel: "ch", Namespace: "cc", Collection: "mycollection"}
 	mockCCInfoProvider.CollectionInfoReturns(nil, errors.New("collection-info-error"))
 	_, err = cs.RetrieveCollection(ccr)
 	assert.EqualError(t, err, "collection-info-error")
@@ -109,6 +110,7 @@ func TestCollectionStore(t *testing.T) {
 		&ledger.DeployedChaincodeInfo{ExplicitCollectionConfigPkg: ccp},
 		nil,
 	)
+	mockCCInfoProvider.AllCollectionsConfigPkgReturns(ccp, nil)
 
 	ccc, err := cs.RetrieveCollectionConfigPackage(ccr)
 	assert.NoError(t, err)

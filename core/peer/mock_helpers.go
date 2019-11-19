@@ -7,23 +7,21 @@ SPDX-License-Identifier: Apache-2.0
 package peer
 
 import (
+	"github.com/hyperledger/fabric/bccsp/sw"
 	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
 	mockchannelconfig "github.com/hyperledger/fabric/common/mocks/config"
 	mockconfigtx "github.com/hyperledger/fabric/common/mocks/configtx"
-	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
+	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
-	"github.com/hyperledger/fabric/core/ledger/ledgermgmt/ledgermgmttest"
-	"github.com/hyperledger/fabric/protos/common"
 )
 
-func CreateMockChannel(p *Peer, cid string) error {
+func CreateMockChannel(p *Peer, cid string, policyMgr policies.Manager) error {
 	var ledger ledger.PeerLedger
 	var err error
 
 	if ledger = p.GetLedger(cid); ledger == nil {
 		gb, _ := configtxtest.MakeGenesisBlock(cid)
-		if ledger, err = p.LedgerMgr.CreateLedger(gb); err != nil {
+		if ledger, err = p.LedgerMgr.CreateLedger(cid, gb); err != nil {
 			return err
 		}
 	}
@@ -35,27 +33,20 @@ func CreateMockChannel(p *Peer, cid string) error {
 		p.channels = map[string]*Channel{}
 	}
 
+	cryptoProvider, err := sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+	if err != nil {
+		return err
+	}
+
 	p.channels[cid] = &Channel{
 		ledger: ledger,
 		resources: &mockchannelconfig.Resources{
-			PolicyManagerVal: &mockpolicies.Manager{
-				Policy: &mockpolicies.Policy{},
-			},
+			PolicyManagerVal:     policyMgr,
 			ConfigtxValidatorVal: &mockconfigtx.Validator{},
 			ApplicationConfigVal: &mockchannelconfig.MockApplication{CapabilitiesRv: &mockchannelconfig.MockApplicationCapabilities{}},
 		},
+		cryptoProvider: cryptoProvider,
 	}
 
 	return nil
-}
-
-func constructLedgerMgrWithTestDefaults(ledgersDataDir string) (*ledgermgmt.LedgerMgr, error) {
-	ledgerInitializer := ledgermgmttest.NewInitializer(ledgersDataDir)
-	ledgerInitializer.CustomTxProcessors = map[common.HeaderType]ledger.CustomTxProcessor{
-		common.HeaderType_CONFIG: &ConfigTxProcessor{},
-	}
-	ledgerInitializer.Config.HistoryDBConfig = &ledger.HistoryDBConfig{
-		Enabled: true,
-	}
-	return ledgermgmt.NewLedgerMgr(ledgerInitializer), nil
 }

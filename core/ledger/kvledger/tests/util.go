@@ -8,15 +8,15 @@ package tests
 
 import (
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
+	protopeer "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/cauthdsl"
 	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/flogging"
-	mmsp "github.com/hyperledger/fabric/common/mocks/msp"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/tests/fakes"
 	lutils "github.com/hyperledger/fabric/core/ledger/util"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
-	protopeer "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protoutil"
 )
 
@@ -36,6 +36,13 @@ type txAndPvtdata struct {
 	Txid     string
 	Envelope *common.Envelope
 	Pvtws    *rwset.TxPvtReadWriteSet
+}
+
+//go:generate counterfeiter -o fakes/signer.go --fake-name Signer . signer
+
+type signer interface {
+	Sign(msg []byte) ([]byte, error)
+	Serialize() ([]byte, error)
 }
 
 func convertToCollConfigProtoBytes(collConfs []*collConf) ([]byte, error) {
@@ -113,7 +120,7 @@ func constructTransaction(txid string, simulationResults []byte) (*common.Envelo
 
 // constructUnsignedTxEnv creates a Transaction envelope from given inputs
 func constructUnsignedTxEnv(
-	chainID string,
+	channelID string,
 	ccid *protopeer.ChaincodeID,
 	response *protopeer.Response,
 	simulationResults []byte,
@@ -122,10 +129,12 @@ func constructUnsignedTxEnv(
 	visibility []byte,
 	headerType common.HeaderType,
 ) (*common.Envelope, string, error) {
-	mspLcl := mmsp.NewNoopMsp()
-	sigId, _ := mspLcl.GetDefaultSigningIdentity()
 
-	ss, err := sigId.Serialize()
+	sigID := &fakes.Signer{}
+	sigID.SerializeReturns([]byte("signer"), nil)
+	sigID.SignReturns([]byte("signature"), nil)
+
+	ss, err := sigID.Serialize()
 	if err != nil {
 		return nil, "", err
 	}
@@ -135,7 +144,7 @@ func constructUnsignedTxEnv(
 		// if txid is not set, then we need to generate one while creating the proposal message
 		prop, txid, err = protoutil.CreateChaincodeProposal(
 			headerType,
-			chainID,
+			channelID,
 			&protopeer.ChaincodeInvocationSpec{
 				ChaincodeSpec: &protopeer.ChaincodeSpec{
 					ChaincodeId: ccid,
@@ -153,7 +162,7 @@ func constructUnsignedTxEnv(
 		prop, txid, err = protoutil.CreateChaincodeProposalWithTxIDNonceAndTransient(
 			txid,
 			headerType,
-			chainID,
+			channelID,
 			&protopeer.ChaincodeInvocationSpec{
 				ChaincodeSpec: &protopeer.ChaincodeSpec{
 					ChaincodeId: ccid,
@@ -175,14 +184,13 @@ func constructUnsignedTxEnv(
 		simulationResults,
 		nil,
 		ccid,
-		nil,
-		sigId,
+		sigID,
 	)
 	if err != nil {
 		return nil, "", err
 	}
 
-	env, err := protoutil.CreateSignedTx(prop, sigId, presp)
+	env, err := protoutil.CreateSignedTx(prop, sigID, presp)
 	if err != nil {
 		return nil, "", err
 	}

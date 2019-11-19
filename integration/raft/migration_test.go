@@ -18,11 +18,11 @@ import (
 
 	docker "github.com/fsouza/go-dockerclient"
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	protosorderer "github.com/hyperledger/fabric-protos-go/orderer"
+	protosraft "github.com/hyperledger/fabric-protos-go/orderer/etcdraft"
 	"github.com/hyperledger/fabric/integration/nwo"
 	"github.com/hyperledger/fabric/integration/nwo/commands"
-	"github.com/hyperledger/fabric/protos/common"
-	protosorderer "github.com/hyperledger/fabric/protos/orderer"
-	protosraft "github.com/hyperledger/fabric/protos/orderer/etcdraft"
 	"github.com/hyperledger/fabric/protoutil"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -55,11 +55,16 @@ var _ = Describe("Kafka2RaftMigration", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		chaincode = nwo.Chaincode{
-			Name:    "mycc",
-			Version: "0.0",
-			Path:    "github.com/hyperledger/fabric/integration/chaincode/simple/cmd",
-			Ctor:    `{"Args":["init","a","100","b","200"]}`,
-			Policy:  `AND ('Org1MSP.member','Org2MSP.member')`,
+			Name:            "mycc",
+			Version:         "0.0",
+			Path:            components.Build("github.com/hyperledger/fabric/integration/chaincode/module"),
+			Lang:            "binary",
+			PackageFile:     filepath.Join(testDir, "modulecc.tar.gz"),
+			Ctor:            `{"Args":["init","a","100","b","200"]}`,
+			SignaturePolicy: `AND ('Org1MSP.member','Org2MSP.member')`,
+			Sequence:        "1",
+			InitRequired:    true,
+			Label:           "my_prebuilt_chaincode",
 		}
 	})
 
@@ -125,7 +130,8 @@ var _ = Describe("Kafka2RaftMigration", func() {
 
 			By("Create & join first channel, deploy and invoke chaincode")
 			network.CreateAndJoinChannel(orderer, channel1)
-			nwo.DeployChaincodeLegacy(network, channel1, orderer, chaincode)
+			nwo.EnableCapabilities(network, channel1, "Application", "V2_0", orderer, network.Peer("Org1", "peer0"), network.Peer("Org2", "peer0"))
+			nwo.DeployChaincode(network, channel1, orderer, chaincode)
 			RunExpectQueryInvokeQuery(network, orderer, peer, channel1, 100)
 			RunExpectQueryInvokeQuery(network, orderer, peer, channel1, 90)
 		})
@@ -195,7 +201,8 @@ var _ = Describe("Kafka2RaftMigration", func() {
 
 			By("3) Verify: create new channel, executing transaction")
 			network.CreateAndJoinChannel(orderer, channel2)
-			nwo.InstantiateChaincodeLegacy(network, channel2, orderer, chaincode, peer, network.PeersWithChannel(channel2)...)
+			nwo.EnableCapabilities(network, channel2, "Application", "V2_0", orderer, network.Peer("Org1", "peer0"), network.Peer("Org2", "peer0"))
+			nwo.DeployChaincode(network, channel2, orderer, chaincode, network.PeersWithChannel(channel2)...)
 			RunExpectQueryRetry(network, peer, channel2, 100)
 			RunExpectQueryInvokeQuery(network, orderer, peer, channel2, 100)
 			RunExpectQueryInvokeQuery(network, orderer, peer, channel2, 90)
@@ -538,7 +545,7 @@ var _ = Describe("Kafka2RaftMigration", func() {
 
 			brokerGroup := network.BrokerGroupRunner()
 			brokerProc = ifrit.Invoke(brokerGroup)
-			Eventually(brokerProc.Ready()).Should(BeClosed())
+			Eventually(brokerProc.Ready(), network.EventuallyTimeout).Should(BeClosed())
 
 			o1Runner = network.OrdererRunner(o1)
 			o2Runner = network.OrdererRunner(o2)
@@ -550,12 +557,12 @@ var _ = Describe("Kafka2RaftMigration", func() {
 			o2Proc = ifrit.Invoke(o2Runner)
 			o3Proc = ifrit.Invoke(o3Runner)
 
-			Eventually(o1Proc.Ready()).Should(BeClosed())
-			Eventually(o2Proc.Ready()).Should(BeClosed())
-			Eventually(o3Proc.Ready()).Should(BeClosed())
+			Eventually(o1Proc.Ready(), network.EventuallyTimeout).Should(BeClosed())
+			Eventually(o2Proc.Ready(), network.EventuallyTimeout).Should(BeClosed())
+			Eventually(o3Proc.Ready(), network.EventuallyTimeout).Should(BeClosed())
 
 			peerProc = ifrit.Invoke(peerGroup)
-			Eventually(peerProc.Ready()).Should(BeClosed())
+			Eventually(peerProc.Ready(), network.EventuallyTimeout).Should(BeClosed())
 
 			raftMetadata = prepareRaftMetadata(network)
 
@@ -565,7 +572,8 @@ var _ = Describe("Kafka2RaftMigration", func() {
 
 			By("Create & join first channel, deploy and invoke chaincode")
 			network.CreateAndJoinChannel(o1, channel1)
-			nwo.DeployChaincodeLegacy(network, channel1, o1, chaincode)
+			nwo.EnableCapabilities(network, channel1, "Application", "V2_0", o1, network.Peer("Org1", "peer0"), network.Peer("Org2", "peer0"))
+			nwo.DeployChaincode(network, channel1, o1, chaincode)
 			RunExpectQueryInvokeQuery(network, o1, peer, channel1, 100)
 			RunExpectQueryInvokeQuery(network, o1, peer, channel1, 90)
 		})
@@ -703,7 +711,8 @@ var _ = Describe("Kafka2RaftMigration", func() {
 
 			By("12) Create new channel, executing transaction with restarted orderer")
 			network.CreateAndJoinChannel(o1, channel2)
-			nwo.InstantiateChaincodeLegacy(network, channel2, o1, chaincode, peer, network.PeersWithChannel(channel2)...)
+			nwo.EnableCapabilities(network, channel2, "Application", "V2_0", o1, network.Peer("Org1", "peer0"), network.Peer("Org2", "peer0"))
+			nwo.DeployChaincode(network, channel2, o1, chaincode)
 			RunExpectQueryRetry(network, peer, channel2, 100)
 			RunExpectQueryInvokeQuery(network, o1, peer, channel2, 100)
 			RunExpectQueryInvokeQuery(network, o1, peer, channel2, 90)
@@ -730,14 +739,14 @@ var _ = Describe("Kafka2RaftMigration", func() {
 
 			brokerGroup := network.BrokerGroupRunner()
 			brokerProc = ifrit.Invoke(brokerGroup)
-			Eventually(brokerProc.Ready()).Should(BeClosed())
+			Eventually(brokerProc.Ready(), network.EventuallyTimeout).Should(BeClosed())
 
 			o1Runner = network.OrdererRunner(orderer)
 			peerGroup := network.PeerGroupRunner()
 			o1Proc = ifrit.Invoke(o1Runner)
-			Eventually(o1Proc.Ready()).Should(BeClosed())
+			Eventually(o1Proc.Ready(), network.EventuallyTimeout).Should(BeClosed())
 			peerProc = ifrit.Invoke(peerGroup)
-			Eventually(peerProc.Ready()).Should(BeClosed())
+			Eventually(peerProc.Ready(), network.EventuallyTimeout).Should(BeClosed())
 
 			raftMetadata = prepareRaftMetadata(network)
 
@@ -747,7 +756,8 @@ var _ = Describe("Kafka2RaftMigration", func() {
 
 			By("Create & join first channel, deploy and invoke chaincode")
 			network.CreateAndJoinChannel(orderer, channel1)
-			nwo.DeployChaincodeLegacy(network, channel1, orderer, chaincode)
+			nwo.EnableCapabilities(network, channel1, "Application", "V2_0", orderer, network.Peer("Org1", "peer0"), network.Peer("Org2", "peer0"))
+			nwo.DeployChaincode(network, channel1, orderer, chaincode)
 			RunExpectQueryInvokeQuery(network, orderer, peer, channel1, 100)
 			RunExpectQueryInvokeQuery(network, orderer, peer, channel1, 90)
 		})
@@ -868,7 +878,8 @@ var _ = Describe("Kafka2RaftMigration", func() {
 
 			By("12) Create new channel, executing transaction with restarted orderer")
 			network.CreateAndJoinChannel(orderer, channel2)
-			nwo.InstantiateChaincodeLegacy(network, channel2, orderer, chaincode, peer, network.PeersWithChannel(channel2)...)
+			nwo.EnableCapabilities(network, channel2, "Application", "V2_0", orderer, network.Peer("Org1", "peer0"), network.Peer("Org2", "peer0"))
+			nwo.DeployChaincode(network, channel2, orderer, chaincode)
 			RunExpectQueryRetry(network, peer, channel2, 100)
 			RunExpectQueryInvokeQuery(network, orderer, peer, channel2, 100)
 			RunExpectQueryInvokeQuery(network, orderer, peer, channel2, 90)
@@ -1036,7 +1047,7 @@ func prepareRaftMetadata(network *nwo.Network) []byte {
 		fullTlsPath := network.OrdererLocalTLSDir(o)
 		certBytes, err := ioutil.ReadFile(filepath.Join(fullTlsPath, "server.crt"))
 		Expect(err).NotTo(HaveOccurred())
-		port := network.OrdererPort(o, nwo.ListenPort)
+		port := network.OrdererPort(o, nwo.ClusterPort)
 
 		consenter := &protosraft.Consenter{
 			ClientTlsCert: certBytes,
@@ -1095,7 +1106,7 @@ func checkPeerDeliverRequest(o *nwo.Orderer, submitter *nwo.Peer, network *nwo.N
 
 func updateOrdererConfigFailed(n *nwo.Network, orderer *nwo.Orderer, channel string, current, updated *common.Config, peer *nwo.Peer, additionalSigners ...*nwo.Orderer) {
 	sess := nwo.UpdateOrdererConfigSession(n, orderer, channel, current, updated, peer, additionalSigners...)
-	Expect(sess.ExitCode()).NotTo(Equal(0))
+	Eventually(sess, n.EventuallyTimeout).Should(gexec.Exit(1))
 	Expect(sess.Err).NotTo(gbytes.Say("Successfully submitted channel update"))
 }
 

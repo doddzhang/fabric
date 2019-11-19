@@ -18,18 +18,19 @@ import (
 
 	"code.cloudfoundry.org/clock/fakeclock"
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/orderer"
+	raftprotos "github.com/hyperledger/fabric-protos-go/orderer/etcdraft"
+	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/bccsp/factory"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
 	"github.com/hyperledger/fabric/common/flogging"
-	mockconfig "github.com/hyperledger/fabric/common/mocks/config"
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	"github.com/hyperledger/fabric/orderer/consensus/etcdraft"
 	"github.com/hyperledger/fabric/orderer/consensus/etcdraft/mocks"
 	consensusmocks "github.com/hyperledger/fabric/orderer/consensus/mocks"
 	mockblockcutter "github.com/hyperledger/fabric/orderer/mocks/common/blockcutter"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/orderer"
-	raftprotos "github.com/hyperledger/fabric/protos/orderer/etcdraft"
 	"github.com/hyperledger/fabric/protoutil"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -55,6 +56,13 @@ const (
 
 func init() {
 	factory.InitFactories(nil)
+}
+
+func mockOrderer(batchTimeout time.Duration, metadata []byte) *mocks.OrdererConfig {
+	orderer := &mocks.OrdererConfig{}
+	orderer.BatchTimeoutReturns(batchTimeout)
+	orderer.ConsensusMetadataReturns(metadata)
+	return orderer
 }
 
 // for some test cases we chmod file/dir to test failures caused by exotic permissions.
@@ -104,9 +112,13 @@ var _ = Describe("Chain", func() {
 			snapDir           string
 			err               error
 			fakeFields        *fakeMetricsFields
+			cryptoProvider    bccsp.BCCSP
 		)
 
 		BeforeEach(func() {
+			cryptoProvider, err = sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+			Expect(err).NotTo(HaveOccurred())
+
 			configurator = &mocks.FakeConfigurator{}
 			clock = fakeclock.NewFakeClock(time.Now())
 			storage = raft.NewMemoryStorage()
@@ -119,12 +131,10 @@ var _ = Describe("Chain", func() {
 			observeC = make(chan raft.SoftState, 1)
 
 			support = &consensusmocks.FakeConsenterSupport{}
-			support.ChainIDReturns(channelID)
+			support.ChannelIDReturns(channelID)
 			consenterMetadata = createMetadata(1, tlsCA)
-			support.SharedConfigReturns(&mockconfig.Orderer{
-				BatchTimeoutVal:      time.Hour,
-				ConsensusMetadataVal: marshalOrPanic(consenterMetadata),
-			})
+			support.SharedConfigReturns(mockOrderer(time.Hour, marshalOrPanic(consenterMetadata)))
+
 			cutter = mockblockcutter.NewReceiver()
 			support.BlockCutterReturns(cutter)
 
@@ -175,7 +185,7 @@ var _ = Describe("Chain", func() {
 		}
 
 		JustBeforeEach(func() {
-			chain, err = etcdraft.NewChain(support, opts, configurator, nil, noOpBlockPuller, observeC)
+			chain, err = etcdraft.NewChain(support, opts, configurator, nil, cryptoProvider, noOpBlockPuller, nil, observeC)
 			Expect(err).NotTo(HaveOccurred())
 
 			chain.Start()
@@ -201,6 +211,8 @@ var _ = Describe("Chain", func() {
 		AfterEach(func() {
 			chain.Halt()
 			Eventually(chain.Errored, LongEventualTimeout).Should(BeClosed())
+			// Make sure no timer leak
+			Eventually(clock.WatcherCount, LongEventualTimeout).Should(BeZero())
 			os.RemoveAll(dataDir)
 		})
 
@@ -220,6 +232,7 @@ var _ = Describe("Chain", func() {
 				metricsList := []withImplementers{
 					fakeFields.fakeClusterSize,
 					fakeFields.fakeIsLeader,
+					fakeFields.fakeActiveNodes,
 					fakeFields.fakeCommittedBlockNumber,
 					fakeFields.fakeSnapshotBlockNumber,
 					fakeFields.fakeLeaderChanges,
@@ -239,6 +252,8 @@ var _ = Describe("Chain", func() {
 				Expect(fakeFields.fakeClusterSize.SetArgsForCall(0)).To(Equal(float64(1)))
 				Expect(fakeFields.fakeIsLeader.SetCallCount()).To(Equal(1))
 				Expect(fakeFields.fakeIsLeader.SetArgsForCall(0)).To(Equal(float64(0)))
+				Expect(fakeFields.fakeActiveNodes.SetCallCount()).To(Equal(1))
+				Expect(fakeFields.fakeActiveNodes.SetArgsForCall(0)).To(Equal(float64(0)))
 			})
 		})
 
@@ -269,7 +284,7 @@ var _ = Describe("Chain", func() {
 				campaign(chain, observeC)
 			})
 
-			It("updates metrics upon leader election)", func() {
+			It("updates metrics upon leader election", func() {
 				Expect(fakeFields.fakeIsLeader.SetCallCount()).To(Equal(2))
 				Expect(fakeFields.fakeIsLeader.SetArgsForCall(1)).To(Equal(float64(1)))
 				Expect(fakeFields.fakeLeaderChanges.AddCallCount()).To(Equal(1))
@@ -313,7 +328,7 @@ var _ = Describe("Chain", func() {
 				By("respecting batch timeout")
 				cutter.CutNext = false
 				timeout := time.Second
-				support.SharedConfigReturns(&mockconfig.Orderer{BatchTimeoutVal: timeout})
+				support.SharedConfigReturns(mockOrderer(timeout, nil))
 				err = chain.Order(env, 0)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(fakeFields.fakeNormalProposalsReceived.AddCallCount()).To(Equal(2))
@@ -331,7 +346,7 @@ var _ = Describe("Chain", func() {
 				close(cutter.Block)
 
 				timeout := time.Second
-				support.SharedConfigReturns(&mockconfig.Orderer{BatchTimeoutVal: timeout})
+				support.SharedConfigReturns(mockOrderer(timeout, nil))
 
 				err := chain.Order(env, 0)
 				Expect(err).NotTo(HaveOccurred())
@@ -352,7 +367,7 @@ var _ = Describe("Chain", func() {
 			It("does not write a block if halted before timeout", func() {
 				close(cutter.Block)
 				timeout := time.Second
-				support.SharedConfigReturns(&mockconfig.Orderer{BatchTimeoutVal: timeout})
+				support.SharedConfigReturns(mockOrderer(timeout, nil))
 
 				err := chain.Order(env, 0)
 				Expect(err).NotTo(HaveOccurred())
@@ -369,7 +384,7 @@ var _ = Describe("Chain", func() {
 				close(cutter.Block)
 
 				timeout := time.Second
-				support.SharedConfigReturns(&mockconfig.Orderer{BatchTimeoutVal: timeout})
+				support.SharedConfigReturns(mockOrderer(timeout, nil))
 
 				err := chain.Order(env, 0)
 				Expect(err).NotTo(HaveOccurred())
@@ -407,7 +422,7 @@ var _ = Describe("Chain", func() {
 				close(cutter.Block)
 
 				timeout := time.Second
-				support.SharedConfigReturns(&mockconfig.Orderer{BatchTimeoutVal: timeout})
+				support.SharedConfigReturns(mockOrderer(timeout, nil))
 
 				err := chain.Order(env, 0)
 				Expect(err).NotTo(HaveOccurred())
@@ -425,7 +440,7 @@ var _ = Describe("Chain", func() {
 					close(cutter.Block)
 
 					timeout := time.Hour
-					support.SharedConfigReturns(&mockconfig.Orderer{BatchTimeoutVal: timeout})
+					support.SharedConfigReturns(mockOrderer(timeout, nil))
 					support.SequenceReturns(1)
 				})
 
@@ -517,8 +532,6 @@ var _ = Describe("Chain", func() {
 									Expect(fakeFields.fakeNormalProposalsReceived.AddArgsForCall(0)).To(Equal(float64(1)))
 									Eventually(cutter.CurBatch, LongEventualTimeout).Should(HaveLen(1))
 
-									// // clock.WaitForNWatchersAndIncrement(timeout, 2)
-
 									By("adding a config envelope")
 									err = chain.Configure(configEnv, configSeq)
 									Expect(err).NotTo(HaveOccurred())
@@ -573,7 +586,7 @@ var _ = Describe("Chain", func() {
 								Consistently(support.WriteConfigBlockCallCount).Should(Equal(0))
 
 								clock.Increment(30 * time.Minute)
-								Eventually(support.WriteBlockCallCount).Should(Equal(1))
+								Eventually(support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(1))
 							})
 						})
 					})
@@ -703,7 +716,7 @@ var _ = Describe("Chain", func() {
 					})
 
 					It("replays blocks from committed entries", func() {
-						c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters)
+						c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters, cryptoProvider)
 						c.init()
 						c.Start()
 						defer c.Halt()
@@ -733,7 +746,7 @@ var _ = Describe("Chain", func() {
 
 					It("only replays blocks after Applied index", func() {
 						raftMetadata.RaftIndex = m1.RaftIndex
-						c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters)
+						c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters, cryptoProvider)
 						c.support.WriteBlock(support.WriteBlockArgsForCall(0))
 
 						c.init()
@@ -759,7 +772,7 @@ var _ = Describe("Chain", func() {
 
 					It("does not replay any block if already in sync", func() {
 						raftMetadata.RaftIndex = m2.RaftIndex
-						c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters)
+						c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters, cryptoProvider)
 						c.init()
 						c.Start()
 						defer c.Halt()
@@ -786,7 +799,7 @@ var _ = Describe("Chain", func() {
 								os.Chmod(path.Join(walDir, f.Name()), 0300)
 							}
 
-							c, err := etcdraft.NewChain(support, opts, configurator, nil, noOpBlockPuller, observeC)
+							c, err := etcdraft.NewChain(support, opts, configurator, nil, cryptoProvider, noOpBlockPuller, nil, observeC)
 							Expect(c).To(BeNil())
 							Expect(err).To(MatchError(ContainSubstring("permission denied")))
 						})
@@ -891,7 +904,7 @@ var _ = Describe("Chain", func() {
 
 							chain.Halt()
 
-							c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters)
+							c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters, cryptoProvider)
 							c.init()
 
 							signal := make(chan struct{})
@@ -954,7 +967,7 @@ var _ = Describe("Chain", func() {
 							chain.Halt()
 
 							raftMetadata.RaftIndex = m.RaftIndex
-							c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters)
+							c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters, cryptoProvider)
 							c.opts.SnapshotIntervalSize = 1
 
 							c.init()
@@ -983,7 +996,7 @@ var _ = Describe("Chain", func() {
 							m = &raftprotos.BlockMetadata{}
 							proto.Unmarshal(metadata, m)
 							raftMetadata.RaftIndex = m.RaftIndex
-							cx := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters)
+							cx := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters, cryptoProvider)
 
 							cx.init()
 							cx.Start()
@@ -1047,7 +1060,7 @@ var _ = Describe("Chain", func() {
 							chain.Halt()
 
 							raftMetadata.RaftIndex = m.RaftIndex
-							c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters)
+							c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters, cryptoProvider)
 							cnt := support.WriteBlockCallCount()
 							for i := 0; i < cnt; i++ {
 								c.support.WriteBlock(support.WriteBlockArgsForCall(i))
@@ -1105,7 +1118,7 @@ var _ = Describe("Chain", func() {
 								chain.Halt()
 
 								raftMetadata.RaftIndex = m.RaftIndex
-								c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters)
+								c := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters, cryptoProvider)
 								// replay block 1&2
 								c.support.WriteBlock(support.WriteBlockArgsForCall(0))
 								c.support.WriteBlock(support.WriteBlockArgsForCall(1))
@@ -1152,7 +1165,7 @@ var _ = Describe("Chain", func() {
 							chain.Halt()
 
 							raftMetadata.RaftIndex = m.RaftIndex
-							c1 := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters)
+							c1 := newChain(10*time.Second, channelID, dataDir, 1, raftMetadata, consenters, cryptoProvider)
 							cnt := support.WriteBlockCallCount()
 							for i := 0; i < cnt; i++ {
 								c1.support.WriteBlock(support.WriteBlockArgsForCall(i))
@@ -1201,6 +1214,8 @@ var _ = Describe("Chain", func() {
 							},
 							configurator,
 							nil,
+							cryptoProvider,
+							nil,
 							nil,
 							observeC)
 						Expect(chain).NotTo(BeNil())
@@ -1233,7 +1248,9 @@ var _ = Describe("Chain", func() {
 							},
 							nil,
 							nil,
+							cryptoProvider,
 							noOpBlockPuller,
+							nil,
 							nil)
 						Expect(chain).NotTo(BeNil())
 						Expect(err).NotTo(HaveOccurred())
@@ -1261,7 +1278,9 @@ var _ = Describe("Chain", func() {
 							},
 							nil,
 							nil,
+							cryptoProvider,
 							noOpBlockPuller,
+							nil,
 							nil)
 						Expect(chain).To(BeNil())
 						Expect(err).To(MatchError(ContainSubstring("failed to initialize WAL: mkdir")))
@@ -1273,14 +1292,15 @@ var _ = Describe("Chain", func() {
 
 	Describe("2-node Raft cluster", func() {
 		var (
-			network      *network
-			channelID    string
-			timeout      time.Duration
-			dataDir      string
-			c1, c2       *chain
-			raftMetadata *raftprotos.BlockMetadata
-			consenters   map[uint64]*raftprotos.Consenter
-			configEnv    *common.Envelope
+			network        *network
+			channelID      string
+			timeout        time.Duration
+			dataDir        string
+			c1, c2         *chain
+			raftMetadata   *raftprotos.BlockMetadata
+			consenters     map[uint64]*raftprotos.Consenter
+			configEnv      *common.Envelope
+			cryptoProvider bccsp.BCCSP
 		)
 		BeforeEach(func() {
 			var err error
@@ -1289,6 +1309,9 @@ var _ = Describe("Chain", func() {
 			timeout = 10 * time.Second
 
 			dataDir, err = ioutil.TempDir("", "raft-test-")
+			Expect(err).NotTo(HaveOccurred())
+
+			cryptoProvider, err = sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
 			Expect(err).NotTo(HaveOccurred())
 
 			raftMetadata = &raftprotos.BlockMetadata{
@@ -1332,7 +1355,7 @@ var _ = Describe("Chain", func() {
 			// prepare config update to remove 1
 			configEnv = newConfigEnv(channelID, common.HeaderType_CONFIG, newConfigUpdateEnv(channelID, nil, value))
 
-			network = createNetwork(timeout, channelID, dataDir, raftMetadata, consenters)
+			network = createNetwork(timeout, channelID, dataDir, raftMetadata, consenters, cryptoProvider)
 			c1, c2 = network.chains[1], network.chains[2]
 			c1.cutter.CutNext = true
 			network.init()
@@ -1341,22 +1364,32 @@ var _ = Describe("Chain", func() {
 
 		AfterEach(func() {
 			network.stop()
+			network.exec(func(c *chain) {
+				Eventually(c.clock.WatcherCount, LongEventualTimeout).Should(BeZero())
+			})
+
 			os.RemoveAll(dataDir)
 		})
 
 		It("can remove leader by reconfiguring cluster", func() {
 			network.elect(1)
 
-			n := c1.clock.WatcherCount()
+			// trigger status dissemination
+			Eventually(func() int {
+				c1.clock.Increment(interval)
+				return c2.fakeFields.fakeActiveNodes.SetCallCount()
+			}, LongEventualTimeout).Should(Equal(2))
+			Expect(c2.fakeFields.fakeActiveNodes.SetArgsForCall(1)).To(Equal(float64(2)))
 
 			By("Configuring cluster to remove node")
 			Expect(c1.Configure(configEnv, 0)).To(Succeed())
 			Eventually(c2.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(1))
-			Eventually(c2.configurator.ConfigureCallCount, LongEventualTimeout).Should(Equal(2))
+			c1.clock.WaitForNWatchersAndIncrement(ELECTION_TICK*interval, 2)
 
-			c1.clock.WaitForNWatchersAndIncrement(time.Duration(ELECTION_TICK)*interval, n+1)
-			Eventually(c1.Chain.Errored, LongEventualTimeout).Should(BeClosed())
-			close(c1.stopped) // mark c1 stopped in network
+			Eventually(func() <-chan raft.SoftState {
+				c2.clock.Increment(interval)
+				return c2.observe
+			}, LongEventualTimeout).Should(Receive(StateEqual(2, raft.StateLeader)))
 
 			By("Asserting leader can still serve requests as single-node cluster")
 			c2.cutter.CutNext = true
@@ -1381,15 +1414,13 @@ var _ = Describe("Chain", func() {
 				return step1(dest, msg)
 			})
 
-			n := c1.clock.WatcherCount()
-
 			By("Configuring cluster to remove node")
 			Expect(c1.Configure(configEnv, 0)).To(Succeed())
 			Eventually(c2.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(1))
-			c2.clock.WaitForNWatchersAndIncrement(time.Duration(ELECTION_TICK)*interval, n+1)
+			c2.clock.WaitForNWatchersAndIncrement(time.Duration(ELECTION_TICK)*interval, 2)
 			Eventually(c2.configurator.ConfigureCallCount, LongEventualTimeout).Should(Equal(2))
 
-			c1.clock.WaitForNWatchersAndIncrement(time.Duration(ELECTION_TICK)*interval, n+1)
+			c1.clock.WaitForNWatchersAndIncrement(time.Duration(ELECTION_TICK)*interval, 2)
 			Eventually(c1.Chain.Errored, LongEventualTimeout).Should(BeClosed())
 			close(c1.stopped) // mark c1 stopped in network
 
@@ -1421,13 +1452,14 @@ var _ = Describe("Chain", func() {
 
 	Describe("3-node Raft cluster", func() {
 		var (
-			network      *network
-			channelID    string
-			timeout      time.Duration
-			dataDir      string
-			c1, c2, c3   *chain
-			raftMetadata *raftprotos.BlockMetadata
-			consenters   map[uint64]*raftprotos.Consenter
+			network        *network
+			channelID      string
+			timeout        time.Duration
+			dataDir        string
+			c1, c2, c3     *chain
+			raftMetadata   *raftprotos.BlockMetadata
+			consenters     map[uint64]*raftprotos.Consenter
+			cryptoProvider bccsp.BCCSP
 		)
 
 		BeforeEach(func() {
@@ -1443,6 +1475,9 @@ var _ = Describe("Chain", func() {
 				ConsenterIds:    []uint64{1, 2, 3},
 				NextConsenterId: 4,
 			}
+
+			cryptoProvider, err = sw.NewDefaultSecurityLevelWithKeystore(sw.NewDummyKeyStore())
+			Expect(err).NotTo(HaveOccurred())
 
 			consenters = map[uint64]*raftprotos.Consenter{
 				1: {
@@ -1465,13 +1500,18 @@ var _ = Describe("Chain", func() {
 				},
 			}
 
-			network = createNetwork(timeout, channelID, dataDir, raftMetadata, consenters)
+			network = createNetwork(timeout, channelID, dataDir, raftMetadata, consenters, cryptoProvider)
 			c1 = network.chains[1]
 			c2 = network.chains[2]
 			c3 = network.chains[3]
 		})
 
 		AfterEach(func() {
+			network.stop()
+			network.exec(func(c *chain) {
+				Eventually(c.clock.WatcherCount, LongEventualTimeout).Should(BeZero())
+			})
+
 			os.RemoveAll(dataDir)
 		})
 
@@ -1480,6 +1520,13 @@ var _ = Describe("Chain", func() {
 				network.init()
 				network.start(1, 2)
 				network.elect(1)
+
+				// trigger status dissemination
+				Eventually(func() int {
+					c1.clock.Increment(interval)
+					return c2.fakeFields.fakeActiveNodes.SetCallCount()
+				}, LongEventualTimeout).Should(Equal(2))
+				Expect(c2.fakeFields.fakeActiveNodes.SetArgsForCall(1)).To(Equal(float64(2)))
 
 				c1.cutter.CutNext = true
 				err := c1.Order(env, 0)
@@ -1899,7 +1946,7 @@ var _ = Describe("Chain", func() {
 					raftmeta, err := etcdraft.ReadBlockMetadata(meta, nil)
 					Expect(err).NotTo(HaveOccurred())
 
-					c4 := newChain(timeout, channelID, dataDir, 4, raftmeta, consenters)
+					c4 := newChain(timeout, channelID, dataDir, 4, raftmeta, consenters, cryptoProvider)
 					// if we join a node to existing network, it MUST already obtained blocks
 					// till the config block that adds this node to cluster.
 					c4.support.WriteBlock(c1.support.WriteBlockArgsForCall(0))
@@ -1967,79 +2014,6 @@ var _ = Describe("Chain", func() {
 					})
 				})
 
-				It("adding node to the cluster of 2/3 available nodes", func() {
-					// Scenario: disconnect one of existing nodes from the replica set
-					// add new node, reconnect the old one and choose newly added as a
-					// leader, check whenever disconnected node will get new configuration
-					// and will see newly added as a leader
-
-					// disconnect second node
-					network.disconnect(2)
-
-					configEnv := newConfigEnv(channelID, common.HeaderType_CONFIG, newConfigUpdateEnv(channelID, nil, addConsenterConfigValue()))
-					c1.cutter.CutNext = true
-
-					By("sending config transaction")
-					err := c1.Configure(configEnv, 0)
-					Expect(err).NotTo(HaveOccurred())
-
-					Eventually(c1.support.WriteConfigBlockCallCount, defaultTimeout).Should(Equal(1))
-					// second node is disconnected hence should not be able to get the config block
-					Eventually(c2.support.WriteConfigBlockCallCount, defaultTimeout).Should(Equal(0))
-					Eventually(c3.support.WriteConfigBlockCallCount, defaultTimeout).Should(Equal(1))
-
-					_, raftmetabytes := c1.support.WriteConfigBlockArgsForCall(0)
-					meta := &common.Metadata{Value: raftmetabytes}
-					raftmeta, err := etcdraft.ReadBlockMetadata(meta, nil)
-					Expect(err).NotTo(HaveOccurred())
-
-					c4 := newChain(timeout, channelID, dataDir, 4, raftmeta, consenters)
-					// if we join a node to existing network, it MUST already obtained blocks
-					// till the config block that adds this node to cluster.
-					c4.support.WriteBlock(c1.support.WriteBlockArgsForCall(0))
-					c4.support.WriteConfigBlock(c1.support.WriteConfigBlockArgsForCall(0))
-
-					c4.init()
-
-					network.addChain(c4)
-					c4.start()
-					Expect(c4.WaitReady()).To(Succeed())
-					network.join(4, true)
-
-					Eventually(c4.support.WriteBlockCallCount, defaultTimeout).Should(Equal(1))
-					Eventually(c4.support.WriteConfigBlockCallCount, defaultTimeout).Should(Equal(1))
-
-					By("submitting new transaction to follower")
-					c1.cutter.CutNext = true
-					err = c4.Order(env, 0)
-					Expect(err).NotTo(HaveOccurred())
-					Eventually(c4.support.WriteBlockCallCount, defaultTimeout).Should(Equal(2))
-
-					// elect newly added node to be the leader
-					network.elect(4)
-
-					c2.Consensus(&orderer.ConsensusRequest{Payload: protoutil.MarshalOrPanic(&raftpb.Message{Type: raftpb.MsgTimeoutNow})}, 0)
-					Eventually(c2.observe, LongEventualTimeout).Should(Receive(StateEqual(0, raft.StateCandidate)))
-
-					// connecting node back again, should be able to catch up and get configuration update
-					network.connect(2)
-
-					// make sure second node see 4th as a leader
-					Eventually(func() <-chan raft.SoftState {
-						c4.clock.Increment(interval)
-						return c2.observe
-					}, defaultTimeout).Should(Receive(Equal(raft.SoftState{Lead: 4, RaftState: raft.StateFollower})))
-
-					By("submitting new transaction to re-connected node")
-					c4.cutter.CutNext = true
-					err = c2.Order(env, 0)
-					Expect(err).NotTo(HaveOccurred())
-
-					network.exec(func(c *chain) {
-						Eventually(c.support.WriteBlockCallCount, defaultTimeout).Should(Equal(3))
-					})
-				})
-
 				It("stop leader and continue reconfiguration failing over to new leader", func() {
 					// Scenario: Starting replica set of 3 Raft nodes, electing node c1 to be a leader
 					// configure chain support mock to disconnect c1 right after it writes configuration block
@@ -2076,6 +2050,8 @@ var _ = Describe("Chain", func() {
 						func(c *chain) {
 							Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(1))
 						})
+
+					Eventually(c1.rpc.SendConsensusCallCount, LongEventualTimeout).Should(Equal(count + 6))
 					c1.setStepFunc(step1)
 
 					// elect node with higher index
@@ -2093,7 +2069,7 @@ var _ = Describe("Chain", func() {
 					raftmeta, err := etcdraft.ReadBlockMetadata(meta, nil)
 					Expect(err).NotTo(HaveOccurred())
 
-					c4 := newChain(timeout, channelID, dataDir, 4, raftmeta, consenters)
+					c4 := newChain(timeout, channelID, dataDir, 4, raftmeta, consenters, cryptoProvider)
 					// if we join a node to existing network, it MUST already obtained blocks
 					// till the config block that adds this node to cluster.
 					c4.support.WriteBlock(c1.support.WriteBlockArgsForCall(0))
@@ -2159,12 +2135,16 @@ var _ = Describe("Chain", func() {
 							Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(1))
 						})
 
+					// assert conf change proposals have been dropped, before proceed to reconnect network
+					Eventually(c1.rpc.SendConsensusCallCount, LongEventualTimeout).Should(Equal(count + 6))
+					c1.setStepFunc(step1)
+
 					_, raftmetabytes := c1.support.WriteConfigBlockArgsForCall(0)
 					meta := &common.Metadata{Value: raftmetabytes}
 					raftmeta, err := etcdraft.ReadBlockMetadata(meta, nil)
 					Expect(err).NotTo(HaveOccurred())
 
-					c4 := newChain(timeout, channelID, dataDir, 4, raftmeta, consenters)
+					c4 := newChain(timeout, channelID, dataDir, 4, raftmeta, consenters, cryptoProvider)
 					// if we join a node to existing network, it MUST already obtained blocks
 					// till the config block that adds this node to cluster.
 					c4.support.WriteBlock(c1.support.WriteBlockArgsForCall(0))
@@ -2237,6 +2217,9 @@ var _ = Describe("Chain", func() {
 					network.exec(func(c *chain) {
 						Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(1))
 					})
+
+					Eventually(c1.rpc.SendConsensusCallCount, LongEventualTimeout).Should(Equal(count + 6))
+					c1.setStepFunc(step1)
 
 					// elect node with higher index
 					i2, _ := c2.storage.LastIndex() // err is always nil
@@ -2365,7 +2348,7 @@ var _ = Describe("Chain", func() {
 					raftmeta, err := etcdraft.ReadBlockMetadata(meta, nil)
 					Expect(err).NotTo(HaveOccurred())
 
-					c4 := newChain(timeout, channelID, dataDir, 4, raftmeta, consenters)
+					c4 := newChain(timeout, channelID, dataDir, 4, raftmeta, consenters, cryptoProvider)
 					// if we join a node to existing network, it MUST already obtained blocks
 					// till the config block that adds this node to cluster.
 					c4.support.WriteBlock(c1.support.WriteBlockArgsForCall(0))
@@ -3231,7 +3214,7 @@ type stepFunc func(dest uint64, msg *orderer.ConsensusRequest) error
 type chain struct {
 	id uint64
 
-	stepLock sync.RWMutex
+	stepLock sync.Mutex
 	step     stepFunc
 
 	support      *consensusmocks.FakeConsenterSupport
@@ -3256,9 +3239,18 @@ type chain struct {
 	fakeFields *fakeMetricsFields
 
 	*etcdraft.Chain
+
+	cryptoProvider bccsp.BCCSP
 }
 
-func newChain(timeout time.Duration, channel string, dataDir string, id uint64, raftMetadata *raftprotos.BlockMetadata, consenters map[uint64]*raftprotos.Consenter) *chain {
+func newChain(
+	timeout time.Duration,
+	channel, dataDir string,
+	id uint64,
+	raftMetadata *raftprotos.BlockMetadata,
+	consenters map[uint64]*raftprotos.Consenter,
+	cryptoProvider bccsp.BCCSP,
+) *chain {
 	rpc := &mocks.FakeRPC{}
 	clock := fakeclock.NewFakeClock(time.Now())
 	storage := raft.NewMemoryStorage()
@@ -3284,8 +3276,8 @@ func newChain(timeout time.Duration, channel string, dataDir string, id uint64, 
 	}
 
 	support := &consensusmocks.FakeConsenterSupport{}
-	support.ChainIDReturns(channel)
-	support.SharedConfigReturns(&mockconfig.Orderer{BatchTimeoutVal: timeout})
+	support.ChannelIDReturns(channel)
+	support.SharedConfigReturns(mockOrderer(timeout, nil))
 
 	cutter := mockblockcutter.NewReceiver()
 	close(cutter.Block)
@@ -3318,8 +3310,9 @@ func newChain(timeout time.Duration, channel string, dataDir string, id uint64, 
 		ledger: map[uint64]*common.Block{
 			0: getSeedBlock(), // Very first block
 		},
-		ledgerHeight: 1,
-		fakeFields:   fakeFields,
+		ledgerHeight:   1,
+		fakeFields:     fakeFields,
+		cryptoProvider: cryptoProvider,
 	}
 
 	// receives normal blocks and metadata and appends it into
@@ -3394,7 +3387,9 @@ func (c *chain) init() {
 		c.opts,
 		c.configurator,
 		c.rpc,
+		c.cryptoProvider,
 		func() (etcdraft.BlockPuller, error) { return c.puller, nil },
+		nil,
 		c.observe,
 	)
 	Expect(err).NotTo(HaveOccurred())
@@ -3413,8 +3408,8 @@ func (c *chain) setStepFunc(f stepFunc) {
 }
 
 func (c *chain) getStepFunc() stepFunc {
-	c.stepLock.RLock()
-	defer c.stepLock.RUnlock()
+	c.stepLock.Lock()
+	defer c.stepLock.Unlock()
 	return c.step
 }
 
@@ -3495,8 +3490,8 @@ func (n *network) addChain(c *chain) {
 	}
 
 	c.rpc.SendConsensusStub = func(dest uint64, msg *orderer.ConsensusRequest) error {
-		c.stepLock.RLock()
-		defer c.stepLock.RUnlock()
+		c.stepLock.Lock()
+		defer c.stepLock.Unlock()
 		return c.step(dest, msg)
 	}
 
@@ -3557,7 +3552,13 @@ func (n *network) addChain(c *chain) {
 	n.chains[c.id] = c
 }
 
-func createNetwork(timeout time.Duration, channel string, dataDir string, raftMetadata *raftprotos.BlockMetadata, consenters map[uint64]*raftprotos.Consenter) *network {
+func createNetwork(
+	timeout time.Duration,
+	channel, dataDir string,
+	raftMetadata *raftprotos.BlockMetadata,
+	consenters map[uint64]*raftprotos.Consenter,
+	cryptoProvider bccsp.BCCSP,
+) *network {
 	n := &network{
 		chains:       make(map[uint64]*chain),
 		connectivity: make(map[uint64]bool),
@@ -3569,7 +3570,7 @@ func createNetwork(timeout time.Duration, channel string, dataDir string, raftMe
 		Expect(err).NotTo(HaveOccurred())
 
 		m := proto.Clone(raftMetadata).(*raftprotos.BlockMetadata)
-		n.addChain(newChain(timeout, channel, dir, nodeID, m, consenters))
+		n.addChain(newChain(timeout, channel, dir, nodeID, m, consenters, cryptoProvider))
 	}
 
 	return n

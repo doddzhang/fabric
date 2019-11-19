@@ -1,5 +1,6 @@
 /*
 Copyright IBM Corp. All Rights Reserved.
+
 SPDX-License-Identifier: Apache-2.0
 */
 
@@ -13,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/ledger/dataformat"
 	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
@@ -23,8 +25,15 @@ import (
 
 var logger = flogging.MustGetLogger("statecouchdb")
 
-// LsccCacheSize denotes the number of entries allowed in the lsccStateCache
-const lsccCacheSize = 50
+const (
+	// savepointDocID is used as a key for maintaining savepoint (maintained in metadatadb for a channel)
+	savepointDocID = "statedb_savepoint"
+	// fabricInternalDBName is used to create a db in couch that would be used for internal data such as the version of the data format
+	// a double underscore ensures that the dbname does not clash with the dbnames created for the chaincodes
+	fabricInternalDBName = "fabric__internal"
+	// dataformatVersionDocID is used as a key for maintaining version of the data format (maintained in fabric internal db)
+	dataformatVersionDocID = "dataformatVersion"
+)
 
 // VersionedDBProvider implements interface VersionedDBProvider
 type VersionedDBProvider struct {
@@ -42,14 +51,82 @@ func NewVersionedDBProvider(config *couchdb.Config, metricsProvider metrics.Prov
 	if err != nil {
 		return nil, err
 	}
+	if err := checkExpectedDataformatVersion(couchInstance); err != nil {
+		return nil, err
+	}
+	p, err := newRedoLoggerProvider(config.RedoLogPath)
+	if err != nil {
+		return nil, err
+	}
 	return &VersionedDBProvider{
 			couchInstance:      couchInstance,
 			databases:          make(map[string]*VersionedDB),
 			mux:                sync.Mutex{},
 			openCounts:         0,
-			redoLoggerProvider: newRedoLoggerProvider(config.RedoLogPath),
+			redoLoggerProvider: p,
 		},
 		nil
+}
+
+func checkExpectedDataformatVersion(couchInstance *couchdb.CouchInstance) error {
+	databasesToIgnore := []string{fabricInternalDBName}
+	isEmpty, err := couchInstance.IsEmpty(databasesToIgnore)
+	if err != nil {
+		return err
+	}
+	if isEmpty {
+		logger.Debugf("couch instance is empty. Setting dataformat version to %s", dataformat.Version20)
+		return writeDataFormatVersion(couchInstance, dataformat.Version20)
+	}
+	dataformatVersion, err := readDataformatVersion(couchInstance)
+	if err != nil {
+		return err
+	}
+	if dataformatVersion != dataformat.Version20 {
+		return &dataformat.ErrVersionMismatch{
+			DBInfo:          "CouchDB for state database",
+			ExpectedVersion: dataformat.Version20,
+			Version:         dataformatVersion,
+		}
+	}
+	return nil
+}
+
+func readDataformatVersion(couchInstance *couchdb.CouchInstance) (string, error) {
+	db, err := couchdb.CreateCouchDatabase(couchInstance, fabricInternalDBName)
+	if err != nil {
+		return "", err
+	}
+	doc, _, err := db.ReadDoc(dataformatVersionDocID)
+	logger.Debugf("dataformatVersionDoc = %s", doc)
+	if err != nil || doc == nil {
+		return "", err
+	}
+	return decodeDataformatInfo(doc)
+}
+
+func writeDataFormatVersion(couchInstance *couchdb.CouchInstance, dataformatVersion string) error {
+	db, err := couchdb.CreateCouchDatabase(couchInstance, fabricInternalDBName)
+	if err != nil {
+		return err
+	}
+	doc, err := encodeDataformatInfo(dataformatVersion)
+	if err != nil {
+		return err
+	}
+	if _, err := db.SaveDoc(dataformatVersionDocID, "", doc); err != nil {
+		return err
+	}
+	dbResponse, err := db.EnsureFullCommit()
+
+	if err != nil {
+		return err
+	}
+	if !dbResponse.Ok {
+		logger.Errorf("failed to perform full commit while writing dataformat version")
+		return errors.New("failed to perform full commit while writing dataformat version")
+	}
+	return nil
 }
 
 // GetDBHandle gets the handle to a named database
@@ -92,57 +169,7 @@ type VersionedDB struct {
 	committedDataCache *versionsCache                    // Used as a local cache during bulk processing of a block.
 	verCacheLock       sync.RWMutex
 	mux                sync.RWMutex
-	lsccStateCache     *lsccStateCache
 	redoLogger         *redoLogger
-}
-
-type lsccStateCache struct {
-	cache   map[string]*statedb.VersionedValue
-	rwMutex sync.RWMutex
-}
-
-func (l *lsccStateCache) getState(key string) *statedb.VersionedValue {
-	l.rwMutex.RLock()
-	defer l.rwMutex.RUnlock()
-
-	if versionedValue, ok := l.cache[key]; ok {
-		logger.Debugf("key:[%s] found in the lsccStateCache", key)
-		return versionedValue
-	}
-	return nil
-}
-
-func (l *lsccStateCache) updateState(key string, value *statedb.VersionedValue) {
-	l.rwMutex.Lock()
-	defer l.rwMutex.Unlock()
-
-	if _, ok := l.cache[key]; ok {
-		logger.Debugf("key:[%s] is updated in lsccStateCache", key)
-		l.cache[key] = value
-	}
-}
-
-func (l *lsccStateCache) setState(key string, value *statedb.VersionedValue) {
-	l.rwMutex.Lock()
-	defer l.rwMutex.Unlock()
-
-	if l.isCacheFull() {
-		l.evictARandomEntry()
-	}
-
-	logger.Debugf("key:[%s] is stoed in lsccStateCache", key)
-	l.cache[key] = value
-}
-
-func (l *lsccStateCache) isCacheFull() bool {
-	return len(l.cache) == lsccCacheSize
-}
-
-func (l *lsccStateCache) evictARandomEntry() {
-	for key := range l.cache {
-		delete(l.cache, key)
-		return
-	}
 }
 
 // newVersionedDB constructs an instance of VersionedDB
@@ -162,10 +189,7 @@ func newVersionedDB(couchInstance *couchdb.CouchInstance, redoLogger *redoLogger
 		chainName:          chainName,
 		namespaceDBs:       namespaceDBMap,
 		committedDataCache: newVersionCache(),
-		lsccStateCache: &lsccStateCache{
-			cache: make(map[string]*statedb.VersionedValue),
-		},
-		redoLogger: redoLogger,
+		redoLogger:         redoLogger,
 	}
 	logger.Debugf("chain [%s]: checking for redolog record", chainName)
 	redologRecord, err := redoLogger.load()
@@ -319,11 +343,6 @@ func (vdb *VersionedDB) BytesKeySupported() bool {
 // GetState implements method in VersionedDB interface
 func (vdb *VersionedDB) GetState(namespace string, key string) (*statedb.VersionedValue, error) {
 	logger.Debugf("GetState(). ns=%s, key=%s", namespace, key)
-	if namespace == "lscc" {
-		if value := vdb.lsccStateCache.getState(key); value != nil {
-			return value, nil
-		}
-	}
 
 	db, err := vdb.getNamespaceDBHandle(namespace)
 	if err != nil {
@@ -339,10 +358,6 @@ func (vdb *VersionedDB) GetState(namespace string, key string) (*statedb.Version
 	kv, err := couchDocToKeyValue(couchDoc)
 	if err != nil {
 		return nil, err
-	}
-
-	if namespace == "lscc" {
-		vdb.lsccStateCache.setState(key, kv.VersionedValue)
 	}
 
 	return kv.VersionedValue, nil
@@ -552,7 +567,7 @@ func validateQueryMetadata(metadata map[string]interface{}) error {
 // ApplyUpdates implements method in VersionedDB interface
 func (vdb *VersionedDB) ApplyUpdates(updates *statedb.UpdateBatch, height *version.Height) error {
 	if height != nil && updates.ContainsPostOrderWrites {
-		// height is passed nil when commiting missing private data for previously committed blocks
+		// height is passed nil when committing missing private data for previously committed blocks
 		r := &redoRecord{
 			UpdateBatch: updates,
 			Version:     height,
@@ -569,15 +584,15 @@ func (vdb *VersionedDB) applyUpdates(updates *statedb.UpdateBatch, height *versi
 	// the function `Apply update can be split into three functions. Each carrying out one of the following three stages`.
 	// The write lock is needed only for the stage 2.
 
-	// stage 1 - PrepareForUpdates - db transforms the given batch in the form of underlying db
-	// and keep it in memory
-	var updateBatches []batch
-	var err error
-	if updateBatches, err = vdb.buildCommitters(updates); err != nil {
+	// stage 1 - buildCommitters builds committers per namespace (per DB). Each committer transforms the
+	// given batch in the form of underlying db and keep it in memory.
+	committers, err := vdb.buildCommitters(updates)
+	if err != nil {
 		return err
 	}
-	// stage 2 - ApplyUpdates push the changes to the DB
-	if err = executeBatches(updateBatches); err != nil {
+
+	// stage 2 -- executeCommitter executes each committer to push the changes to the DB
+	if err = vdb.executeCommitter(committers); err != nil {
 		return err
 	}
 
@@ -589,10 +604,6 @@ func (vdb *VersionedDB) applyUpdates(updates *statedb.UpdateBatch, height *versi
 		return err
 	}
 
-	lsccUpdates := updates.GetUpdates("lscc")
-	for key, value := range lsccUpdates {
-		vdb.lsccStateCache.updateState(key, value)
-	}
 	return nil
 }
 
@@ -615,9 +626,6 @@ func (vdb *VersionedDB) Close() {
 	// no need to close db since a shared couch instance is used
 }
 
-// Savepoint docid (key) for couchdb
-const savepointDocID = "statedb_savepoint"
-
 // ensureFullCommitAndRecordSavepoint flushes all the dbs (corresponding to `namespaces`) to disk
 // and Record a savepoint in the metadata db.
 // Couch parallelizes writes in cluster or sharded setup and ordering is not guaranteed.
@@ -627,16 +635,34 @@ const savepointDocID = "statedb_savepoint"
 func (vdb *VersionedDB) ensureFullCommitAndRecordSavepoint(height *version.Height, namespaces []string) error {
 	// ensure full commit to flush all changes on updated namespaces until now to disk
 	// namespace also includes empty namespace which is nothing but metadataDB
-	var dbs []*couchdb.CouchDatabase
+	errsChan := make(chan error, len(namespaces))
+	defer close(errsChan)
+	var commitWg sync.WaitGroup
+	commitWg.Add(len(namespaces))
 	for _, ns := range namespaces {
-		db, err := vdb.getNamespaceDBHandle(ns)
-		if err != nil {
-			return err
-		}
-		dbs = append(dbs, db)
+		go func(ns string) {
+			defer commitWg.Done()
+			db, err := vdb.getNamespaceDBHandle(ns)
+			if err != nil {
+				errsChan <- err
+				return
+			}
+			_, err = db.EnsureFullCommit()
+			if err != nil {
+				errsChan <- err
+				return
+			}
+		}(ns)
 	}
-	if err := vdb.ensureFullCommit(dbs); err != nil {
-		return err
+
+	commitWg.Wait()
+
+	select {
+	case err := <-errsChan:
+		logger.Errorf("Failed to perform full commit")
+		return errors.WithMessage(err, "failed to perform full commit")
+	default:
+		logger.Debugf("All changes have been flushed to the disk")
 	}
 
 	// If a given height is nil, it denotes that we are committing pvt data of old blocks.

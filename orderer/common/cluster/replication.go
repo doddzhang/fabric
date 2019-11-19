@@ -13,11 +13,12 @@ import (
 	"encoding/pem"
 	"time"
 
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/internal/pkg/identity"
 	"github.com/hyperledger/fabric/orderer/common/localconfig"
-	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
@@ -138,6 +139,15 @@ func (r *Replicator) ReplicateChains() []string {
 			if err != nil {
 				r.Logger.Panicf("Failed to create a ledger for channel %s: %v", channel.ChannelName, err)
 			}
+
+			if channel.GenesisBlock == nil {
+				if ledger.Height() == 0 {
+					r.Logger.Panicf("Expecting channel %s to at least contain genesis block, but it doesn't", channel.ChannelName)
+				}
+
+				continue
+			}
+
 			gb, err := ChannelCreationBlockToGenesisBlock(channel.GenesisBlock)
 			if err != nil {
 				r.Logger.Panicf("Failed converting channel creation block for channel %s to genesis block: %v",
@@ -349,12 +359,12 @@ type VerifierRetriever interface {
 }
 
 // BlockPullerFromConfigBlock returns a BlockPuller that doesn't verify signatures on blocks.
-func BlockPullerFromConfigBlock(conf PullerConfig, block *common.Block, verifierRetriever VerifierRetriever) (*BlockPuller, error) {
+func BlockPullerFromConfigBlock(conf PullerConfig, block *common.Block, verifierRetriever VerifierRetriever, bccsp bccsp.BCCSP) (*BlockPuller, error) {
 	if block == nil {
 		return nil, errors.New("nil block")
 	}
 
-	endpoints, err := EndpointconfigFromConfigBlock(block)
+	endpoints, err := EndpointconfigFromConfigBlock(block, bccsp)
 	if err != nil {
 		return nil, err
 	}
@@ -609,7 +619,7 @@ func ChannelCreationBlockToGenesisBlock(block *common.Block) (*common.Block, err
 	if err != nil {
 		return nil, err
 	}
-	payload, err := protoutil.ExtractPayload(env)
+	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	if err != nil {
 		return nil, err
 	}
@@ -639,7 +649,7 @@ func IsNewChannelBlock(block *common.Block) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	payload, err := protoutil.ExtractPayload(env)
+	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	if err != nil {
 		return "", err
 	}

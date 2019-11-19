@@ -8,17 +8,16 @@ package ledgermgmt
 
 import (
 	"bytes"
+	"fmt"
 	"sync"
 
+	"github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/metrics"
-	"github.com/hyperledger/fabric/core/chaincode/platforms"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/cceventmgmt"
 	"github.com/hyperledger/fabric/core/ledger/kvledger"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 )
 
@@ -30,23 +29,30 @@ var ErrLedgerAlreadyOpened = errors.New("ledger already opened")
 // ErrLedgerMgmtNotInitialized is thrown when ledger mgmt is used before initializing this
 var ErrLedgerMgmtNotInitialized = errors.New("ledger mgmt should be initialized before using")
 
+// LedgerMgr manages ledgers for all channels
 type LedgerMgr struct {
-	lock           sync.Mutex
-	openedLedgers  map[string]ledger.PeerLedger
-	ledgerProvider ledger.PeerLedgerProvider
+	lock               sync.Mutex
+	openedLedgers      map[string]ledger.PeerLedger
+	ledgerProvider     ledger.PeerLedgerProvider
+	ebMetadataProvider MetadataProvider
+}
+
+type MetadataProvider interface {
+	PackageMetadata(ccid string) ([]byte, error)
 }
 
 // Initializer encapsulates all the external dependencies for the ledger module
 type Initializer struct {
 	CustomTxProcessors              map[common.HeaderType]ledger.CustomTxProcessor
 	StateListeners                  []ledger.StateListener
-	PlatformRegistry                *platforms.Registry
 	DeployedChaincodeInfoProvider   ledger.DeployedChaincodeInfoProvider
 	MembershipInfoProvider          ledger.MembershipInfoProvider
 	ChaincodeLifecycleEventProvider ledger.ChaincodeLifecycleEventProvider
 	MetricsProvider                 metrics.Provider
 	HealthCheckRegistry             ledger.HealthCheckRegistry
 	Config                          *ledger.Config
+	Hasher                          ledger.Hasher
+	EbMetadataProvider              MetadataProvider
 }
 
 // NewLedgerMgr creates a new LedgerMgr
@@ -66,19 +72,20 @@ func NewLedgerMgr(initializer *Initializer) *LedgerMgr {
 			HealthCheckRegistry:             initializer.HealthCheckRegistry,
 			Config:                          initializer.Config,
 			CustomTxProcessors:              initializer.CustomTxProcessors,
+			Hasher:                          initializer.Hasher,
 		},
 	)
 	if err != nil {
-		panic(errors.WithMessage(err, "Error in instantiating ledger provider"))
+		panic(fmt.Sprintf("Error in instantiating ledger provider: %s", err))
 	}
 	ledgerMgr := &LedgerMgr{
-		openedLedgers:  make(map[string]ledger.PeerLedger),
-		ledgerProvider: provider,
+		openedLedgers:      make(map[string]ledger.PeerLedger),
+		ledgerProvider:     provider,
+		ebMetadataProvider: initializer.EbMetadataProvider,
 	}
 	// TODO remove the following package level init
 	cceventmgmt.Initialize(&chaincodeInfoProviderImpl{
 		ledgerMgr,
-		initializer.PlatformRegistry,
 		initializer.DeployedChaincodeInfoProvider,
 	})
 	logger.Info("Initialized LedgerMgr")
@@ -88,13 +95,9 @@ func NewLedgerMgr(initializer *Initializer) *LedgerMgr {
 // CreateLedger creates a new ledger with the given genesis block.
 // This function guarantees that the creation of ledger and committing the genesis block would an atomic action
 // The chain id retrieved from the genesis block is treated as a ledger id
-func (m *LedgerMgr) CreateLedger(genesisBlock *common.Block) (ledger.PeerLedger, error) {
+func (m *LedgerMgr) CreateLedger(id string, genesisBlock *common.Block) (ledger.PeerLedger, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	id, err := protoutil.GetChainIDFromBlock(genesisBlock)
-	if err != nil {
-		return nil, err
-	}
 	logger.Infof("Creating ledger [%s] with genesis block", id)
 	l, err := m.ledgerProvider.Create(genesisBlock)
 	if err != nil {
@@ -114,7 +117,7 @@ func (m *LedgerMgr) OpenLedger(id string) (ledger.PeerLedger, error) {
 	logger.Infof("Opening ledger with id = %s", id)
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	l, ok := m.openedLedgers[id]
+	_, ok := m.openedLedgers[id]
 	if ok {
 		return nil, ErrLedgerAlreadyOpened
 	}
@@ -164,9 +167,11 @@ func (m *LedgerMgr) getOpenedLedger(ledgerID string) (ledger.PeerLedger, error) 
 func (m *LedgerMgr) closeLedger(ledgerID string) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	l := m.openedLedgers[ledgerID]
-	l.Close()
-	delete(m.openedLedgers, ledgerID)
+	l, ok := m.openedLedgers[ledgerID]
+	if ok {
+		l.Close()
+		delete(m.openedLedgers, ledgerID)
+	}
 }
 
 // closableLedger extends from actual validated ledger and overwrites the Close method
@@ -192,7 +197,6 @@ func addListenerForCCEventsHandler(
 // chaincodeInfoProviderImpl implements interface cceventmgmt.ChaincodeInfoProvider
 type chaincodeInfoProviderImpl struct {
 	ledgerMgr              *LedgerMgr
-	pr                     *platforms.Registry
 	deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider
 }
 
@@ -222,5 +226,13 @@ func (p *chaincodeInfoProviderImpl) GetDeployedChaincodeInfo(chainid string,
 
 // RetrieveChaincodeArtifacts implements function in the interface cceventmgmt.ChaincodeInfoProvider
 func (p *chaincodeInfoProviderImpl) RetrieveChaincodeArtifacts(chaincodeDefinition *cceventmgmt.ChaincodeDefinition) (installed bool, dbArtifactsTar []byte, err error) {
-	return ccprovider.ExtractStatedbArtifactsForChaincode(chaincodeDefinition.Name, chaincodeDefinition.Version, p.pr)
+	ccid := chaincodeDefinition.Name + ":" + chaincodeDefinition.Version
+	md, err := p.ledgerMgr.ebMetadataProvider.PackageMetadata(ccid)
+	if err != nil {
+		return false, nil, err
+	}
+	if md != nil {
+		return true, md, nil
+	}
+	return ccprovider.ExtractStatedbArtifactsForChaincode(ccid)
 }

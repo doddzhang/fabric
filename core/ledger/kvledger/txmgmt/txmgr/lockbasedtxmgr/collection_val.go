@@ -6,8 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 package lockbasedtxmgr
 
 import (
+	"github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/protos/common"
 )
 
 // collNameValidator validates the presence of a collection in a namespace
@@ -46,15 +46,10 @@ func (v *collNameValidator) validateCollName(ns, coll string) error {
 
 func (v *collNameValidator) retrieveCollConfigFromStateDB(ns string) (*common.CollectionConfigPackage, error) {
 	logger.Debugf("retrieveCollConfigFromStateDB() begin - ns=[%s]", ns)
-	ccInfo, err := v.ccInfoProvider.ChaincodeInfo(v.ledgerID, ns, v.queryExecutor)
+	confPkg, err := v.ccInfoProvider.AllCollectionsConfigPkg(v.ledgerID, ns, v.queryExecutor)
 	if err != nil {
 		return nil, err
 	}
-	if ccInfo == nil {
-		return nil, &ledger.CollConfigNotDefinedError{Ns: ns}
-	}
-
-	confPkg := ccInfo.AllCollectionsConfigPkg()
 	if confPkg == nil {
 		return nil, &ledger.CollConfigNotDefinedError{Ns: ns}
 	}

@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/orderer/common/cluster"
 	"github.com/hyperledger/fabric/orderer/common/cluster/mocks"
-	"github.com/hyperledger/fabric/protos/orderer"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -307,7 +307,7 @@ func TestExpirationWarningIngress(t *testing.T) {
 	client, err := comm.NewGRPCClient(clientConf)
 	assert.NoError(t, err)
 
-	conn, err := client.NewConnection(srv.Address(), "")
+	conn, err := client.NewConnection(srv.Address())
 	assert.NoError(t, err)
 
 	cl := orderer.NewClusterClient(conn)

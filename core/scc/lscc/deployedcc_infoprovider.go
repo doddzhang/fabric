@@ -8,11 +8,11 @@ package lscc
 
 import (
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/common/privdata"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
 	"github.com/pkg/errors"
 )
 
@@ -20,7 +20,7 @@ const (
 	lsccNamespace = "lscc"
 )
 
-// DeployedCCInfoProvider implements ineterface ledger.DeployedChaincodeInfoProvider
+// DeployedCCInfoProvider implements interface ledger.DeployedChaincodeInfoProvider
 type DeployedCCInfoProvider struct {
 }
 
@@ -82,6 +82,13 @@ func (p *DeployedCCInfoProvider) ChaincodeInfo(channelName, chaincodeName string
 		ExplicitCollectionConfigPkg: collConfigPkg,
 		IsLegacy:                    true,
 	}, nil
+}
+
+// AllCollectionsConfigPkg implements function in interface ledger.DeployedChaincodeInfoProvider
+// this implementation returns just the explicit collection config package as the implicit collections
+// are not used with legacy lifecycle
+func (p *DeployedCCInfoProvider) AllCollectionsConfigPkg(channelName, chaincodeName string, qe ledger.SimpleQueryExecutor) (*common.CollectionConfigPackage, error) {
+	return fetchCollConfigPkg(chaincodeName, qe)
 }
 
 // CollectionInfo implements function in interface ledger.DeployedChaincodeInfoProvider

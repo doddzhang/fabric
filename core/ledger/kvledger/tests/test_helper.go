@@ -32,7 +32,7 @@ type testhelper struct {
 func (env *env) newTestHelperCreateLgr(id string, t *testing.T) *testhelper {
 	genesisBlk, err := constructTestGenesisBlock(id)
 	assert.NoError(t, err)
-	lgr, err := env.ledgerMgr.CreateLedger(genesisBlk)
+	lgr, err := env.ledgerMgr.CreateLedger(id, genesisBlk)
 	assert.NoError(t, err)
 	client, committer, verifier := newClient(lgr, id, t), newCommitter(lgr, t), newVerifier(lgr, t)
 	return &testhelper{client, committer, verifier, lgr, id, assert.New(t)}
@@ -46,16 +46,22 @@ func (env *env) newTestHelperOpenLgr(id string, t *testing.T) *testhelper {
 	return &testhelper{client, committer, verifier, lgr, id, assert.New(t)}
 }
 
-// cutBlockAndCommitWithPvtdata gathers all the transactions simulated by the test code (by calling
+// cutBlockAndCommitLegacy gathers all the transactions simulated by the test code (by calling
 // the functions available in the 'client') and cuts the next block and commits to the ledger
-func (h *testhelper) cutBlockAndCommitWithPvtdata() *ledger.BlockAndPvtData {
-	defer func() { h.simulatedTrans = nil }()
-	return h.committer.cutBlockAndCommitWithPvtdata(h.simulatedTrans...)
+func (h *testhelper) cutBlockAndCommitLegacy() *ledger.BlockAndPvtData {
+	defer func() {
+		h.simulatedTrans = nil
+		h.missingPvtData = make(ledger.TxMissingPvtDataMap)
+	}()
+	return h.committer.cutBlockAndCommitLegacy(h.simulatedTrans, h.missingPvtData)
 }
 
 func (h *testhelper) cutBlockAndCommitExpectError() (*ledger.BlockAndPvtData, error) {
-	defer func() { h.simulatedTrans = nil }()
-	return h.committer.cutBlockAndCommitExpectError(h.simulatedTrans...)
+	defer func() {
+		h.simulatedTrans = nil
+		h.missingPvtData = make(ledger.TxMissingPvtDataMap)
+	}()
+	return h.committer.cutBlockAndCommitExpectError(h.simulatedTrans, h.missingPvtData)
 }
 
 // assertError is a helper function that can be called as assertError(f()) where 'f' is some other function
